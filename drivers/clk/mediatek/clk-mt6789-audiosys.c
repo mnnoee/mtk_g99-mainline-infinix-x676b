@@ -3,6 +3,7 @@
 #include <linux/clk-provider.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
 #include "clk-mtk.h"
@@ -81,8 +82,23 @@ static const struct of_device_id of_match_clk_mt6789_audiosys[] = {
 };
 MODULE_DEVICE_TABLE(of, of_match_clk_mt6789_audiosys);
 
+static int clk_mt6789_audiosys_probe(struct platform_device *pdev)
+{
+	int ret;
+
+	ret = mtk_clk_simple_probe(pdev);
+	if (ret)
+		return ret;
+
+	ret = devm_of_platform_populate(&pdev->dev);
+	if (ret)
+		mtk_clk_simple_remove(pdev);
+
+	return ret;
+}
+
 static struct platform_driver clk_mt6789_audiosys_drv = {
-	.probe = mtk_clk_simple_probe,
+	.probe = clk_mt6789_audiosys_probe,
 	.remove = mtk_clk_simple_remove,
 	.driver = {
 		.name = "clk-mt6789-audiosys",
