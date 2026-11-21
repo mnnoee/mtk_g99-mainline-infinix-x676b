@@ -145,9 +145,19 @@ struct mtk_base_afe_memif {
 	const struct mtk_base_memif_data *data;
 	int irq_usage;
 	int const_irq;
+
+	int using_sram;
+	int use_dram_only;
 	unsigned char *dma_area;
 	dma_addr_t dma_addr;
 	size_t dma_bytes;
+
+	int use_adsp_share_mem;
+	bool ack_enable;
+	int (*ack)(struct snd_pcm_substream *substream);
+	int use_mmap_share_mem;
+	bool vow_barge_in_enable;
+	bool scp_ultra_enable;
 };
 
 struct mtk_base_afe_irq {
