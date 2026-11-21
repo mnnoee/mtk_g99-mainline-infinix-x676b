@@ -223,6 +223,9 @@ static const struct mfd_cell mt6358_devs[] = {
 		.num_resources = ARRAY_SIZE(mt6358_keys_resources),
 		.resources = mt6358_keys_resources,
 		.of_compatible = "mediatek,mt6358-keys"
+	}, {
+		.name = "mt6358-battery",
+		.of_compatible = "mediatek,mt6358-battery"
 	},
 };
 
