@@ -852,7 +852,12 @@ static int lvts_calibration_init(struct device *dev, struct lvts_ctrl *lvts_ctrl
 		if (ret)
 			return ret;
 
-		if (gt) {
+		/*
+		 * MT6789: неоткалиброванные каналы содержат в efuse не count_r,
+		 * а RC-счётчик (~0xAA3), что даёт мусорную температуру.
+		 * Считаем такие значения отсутствующей калибровкой.
+		 */
+		if (gt && calib >= 0x1000) {
 			lvts_ctrl->calibration[i] = calib;
 			if (lvts_ctrl->lvts_data->msr_offset)
 				lvts_ctrl->calibration[i] += lvts_ctrl->lvts_data->msr_offset;
@@ -1385,6 +1390,7 @@ static int lvts_domain_init(struct device *dev, struct lvts_domain *lvts_td,
 		dev_dbg(dev, "Failed to reset domain");
 		return ret;
 	}
+
 
 	for (i = 0; i < lvts_td->num_lvts_ctrl; i++) {
 
@@ -2005,6 +2011,63 @@ static const struct lvts_ctrl_data mt8196_lvts_ap_data_ctrl[] = {
 	}
 };
 
+static const struct lvts_ctrl_data mt6789_lvts_ap_data_ctrl[] = {
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6789_AP_LITTLE_CPU0,
+			  .cal_offsets = { 0x04, 0x05 } },
+			{ .dt_id = MT6789_AP_LITTLE_CPU1,
+			  .cal_offsets = { 0x06, 0x07 } },
+			{ .dt_id = MT6789_AP_LITTLE_CPU2,
+			  .cal_offsets = { 0x08, 0x09 } },
+			{ .dt_id = MT6789_AP_LITTLE_CPU3,
+			  .cal_offsets = { 0x0a, 0x0b } }
+		},
+		VALID_SENSOR_MAP(1, 1, 1, 1),
+		.offset = 0x0,
+		.mode = LVTS_MSR_FILTERED_MODE,
+	},
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6789_AP_LITTLE_CPU4,
+			  .cal_offsets = { 0x0c, 0x0d } },
+			{ .dt_id = MT6789_AP_LITTLE_CPU5,
+			  .cal_offsets = { 0x0e, 0x0f } },
+			{ .dt_id = MT6789_AP_BIG_CPU0,
+			  .cal_offsets = { 0x10, 0x11 } },
+			{ .dt_id = MT6789_AP_BIG_CPU1,
+			  .cal_offsets = { 0x12, 0x13 } }
+		},
+		VALID_SENSOR_MAP(1, 1, 1, 1),
+		.offset = 0x100,
+		.mode = LVTS_MSR_FILTERED_MODE,
+	},
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6789_AP_GPU0,
+			  .cal_offsets = { 0x14, 0x15 } },
+			{ .dt_id = MT6789_AP_GPU1,
+			  .cal_offsets = { 0x16, 0x17 } },
+			{ .dt_id = MT6789_AP_TS3_2,
+			  .cal_offsets = { 0x18, 0x19 } },
+			{ .dt_id = MT6789_AP_TS3_3,
+			  .cal_offsets = { 0x1a, 0x1b } }
+		},
+		VALID_SENSOR_MAP(1, 1, 1, 1),
+		.offset = 0x200,
+		.mode = LVTS_MSR_FILTERED_MODE,
+	},
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6789_AP_TS4_0,
+			  .cal_offsets = { 0x1c, 0x1d } }
+		},
+		VALID_SENSOR_MAP(1, 0, 0, 0),
+		.offset = 0x300,
+		.mode = LVTS_MSR_FILTERED_MODE,
+	}
+};
+
 static const struct lvts_platform_ops lvts_platform_ops_mt7988 = {
 	.lvts_raw_to_temp = lvts_raw_to_temp_mt7988,
 	.lvts_temp_to_raw = lvts_temp_to_raw_mt7988,
@@ -2084,6 +2147,21 @@ static const struct lvts_data mt8188_lvts_ap_data = {
 	.gt_calib_bit_offset = 20,
 	.def_calibration = 35000,
 	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT7988,
+	.ops = &lvts_platform_ops_mt7988,
+};
+
+static const struct lvts_data mt6789_lvts_ap_data = {
+	.lvts_ctrl	= mt6789_lvts_ap_data_ctrl,
+	.conn_cmd	= default_conn_cmds,
+	.init_cmd	= default_init_cmds,
+	.num_lvts_ctrl	= ARRAY_SIZE(mt6789_lvts_ap_data_ctrl),
+	.num_conn_cmd	= ARRAY_SIZE(default_conn_cmds),
+	.num_init_cmd	= ARRAY_SIZE(default_init_cmds),
+	.temp_factor	= LVTS_COEFF_A_MT8195,
+	.temp_offset	= LVTS_COEFF_B_MT8195,
+	.gt_calib_bit_offset = 24,
+	.def_calibration = 35000,
+	.num_cal_offsets = 2,
 	.ops = &lvts_platform_ops_mt7988,
 };
 
@@ -2172,6 +2250,7 @@ static const struct lvts_data mt8196_lvts_ap_data = {
 };
 
 static const struct of_device_id lvts_of_match[] = {
+	{ .compatible = "mediatek,mt6789-lvts-ap", .data = &mt6789_lvts_ap_data },
 	{ .compatible = "mediatek,mt7987-lvts-ap", .data = &mt7987_lvts_ap_data },
 	{ .compatible = "mediatek,mt7988-lvts-ap", .data = &mt7988_lvts_ap_data },
 	{ .compatible = "mediatek,mt8186-lvts", .data = &mt8186_lvts_data },
