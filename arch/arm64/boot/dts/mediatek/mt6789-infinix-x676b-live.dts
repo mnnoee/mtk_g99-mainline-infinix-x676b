@@ -303,6 +303,21 @@
 				mt6358regulator: mt6358regulator {
 					compatible = "mediatek,mt6358-regulator";
 
+					/* SD card: VDD (VMCH) and VccQ (VMC) come from the
+					 * PMIC, not from fixed regulators.
+					 */
+					mt6358_vmch_reg: vmch {
+						regulator-name = "vmch";
+						regulator-min-microvolt = <2900000>;
+						regulator-max-microvolt = <3300000>;
+					};
+
+					mt6358_vmc_reg: vmc {
+						regulator-name = "vmc";
+						regulator-min-microvolt = <1800000>;
+						regulator-max-microvolt = <3300000>;
+					};
+
 					vcn18: vcn18 {
 						regulator-name = "vcn18";
 						regulator-min-microvolt = <1800000>;
@@ -773,7 +788,11 @@
 
 			interrupt-controller;
 			#interrupt-cells = <0x02>;
-			interrupts = <0x00 0xef 0x04 0x00>;
+			/* EINT summary IRQ: GIC SPI 244 (stock eint node
+			 * apirq@1000b000 uses <0 0xf4 4 0>); registers and
+			 * reg-names already include the "eint" region.
+			 */
+			interrupts = <0x00 0xf4 0x04 0x00>;
 			phandle = <0x0d>;
 
 			/* GPIO12 powers the gate IC that feeds the speaker
@@ -803,12 +822,18 @@
 				pins-cmd-dat {
 					pinmux = <0x4901 0x4a01 0x4b01 0x4c01 0x4801>;
 					input-enable;
+					/* MT6789 drive steps are 2/4 mA: 3 mA is
+					 * rejected and would abort the whole group,
+					 * leaving the lines without pull-ups.
+					 */
 					drive-strength = <0x04>;
+					bias-pull-up = <0x65>;
 					};
 
 				pins-clk {
 					pinmux = <0x4701>;
 					drive-strength = <0x04>;
+					bias-pull-down = <0x66>;
 					};
 			};
 
@@ -1067,26 +1092,6 @@
 			};
 		};
 
-		regulator-vmch {
-			compatible = "regulator-fixed";
-			regulator-name = "vmmc";
-			regulator-min-microvolt = <0x325aa0>;
-			regulator-max-microvolt = <0x325aa0>;
-			regulator-always-on;
-			regulator-boot-on;
-			phandle = <0x12>;
-		};
-
-		regulator-vmc {
-			compatible = "regulator-fixed";
-			regulator-name = "vqmmc";
-			regulator-min-microvolt = <0x325aa0>;
-			regulator-max-microvolt = <0x325aa0>;
-			regulator-always-on;
-			regulator-boot-on;
-			phandle = <0x13>;
-		};
-
 		mmc@11240000 {
 			compatible = "mediatek,mt8183-mmc";
 			reg = <0x11240000 0x1000 0x11ef0000 0x1000>;
@@ -1097,8 +1102,8 @@
 			max-frequency = <0xbebc200>;
 			ocr-voltage = <0x30000>;
 			cap-sd-highspeed;
-			vmmc-supply = <0x12>;
-			vqmmc-supply = <0x13>;
+			vmmc-supply = <&mt6358_vmch_reg>;
+			vqmmc-supply = <&mt6358_vmc_reg>;
 			pinctrl-names = "default", "state_uhs";
 			pinctrl-0 = <0x14>;
 			pinctrl-1 = <0x14>;
@@ -1107,7 +1112,10 @@
 			builtin-cd = <0x00>;
 			status = "okay";
 			r_smpl = <0x00>;
-			cd-gpios = <0x0d 0x07 0x01>;
+			/* CD is active-high (stock DT: <&pio 7 0>); with
+			 * ACTIVE_LOW the driver probes a slot with no card.
+			 */
+			cd-gpios = <0x0d 0x07 0x00>;
 		};
 
 
