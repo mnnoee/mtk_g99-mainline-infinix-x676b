@@ -277,10 +277,11 @@
 			#clock-cells = <0x01>;
 		};
 
-		/* PMIC-мост (SPI-подобный) + MT6366 (в mainline он зовётся mt6358).
-		 * Даёт регуляторы, RTC и базу для заряда/батареи.
-		 * Клоки: infra_ao PMIC_AP(1)/PMIC_TMR(0), topckgen PWRAP_ULPOSC(0x4d).
-		 * IRQ: GIC SPI 252; PMIC IRQ приходит через EINT pinctrl (0x0d), пин 137.
+		/* PMIC bridge (SPI-like) + MT6366 (called mt6358 in mainline).
+		 * Provides the regulators, RTC and the base for charger/battery.
+		 * Clocks: infra_ao PMIC_AP(1)/PMIC_TMR(0), topckgen PWRAP_ULPOSC(0x4d).
+		 * IRQ: GIC SPI 252; the PMIC IRQ arrives through the pinctrl EINT
+		 * (0x0d), pin 137.
 		 */
 		pwrap: pwrap@10026000 {
 			compatible = "mediatek,mt6789-pwrap";
@@ -360,7 +361,7 @@
 			};
 		};
 
-		/* efuse (nvmem) — нужен для калибровки LVTS */
+		/* efuse (nvmem) — used for LVTS calibration */
 		efuse: efuse@11c10000 {
 			compatible = "mediatek,efuse";
 			reg = <0x11c10000 0x1000>;
@@ -376,7 +377,9 @@
 			};
 		};
 
-		/* Термодатчики SoC. mt6789 в mainline нет — пробуем mt8192 (тот же блок 0x1100b000) */
+		/* SoC thermal sensors. There is no mt6789 support in mainline yet, so use
+		 * mt8192 (same block at 0x1100b000).
+		 */
 		lvts: thermal-sensor@1100b000 {
 			compatible = "mediatek,mt6789-lvts-ap";
 			reg = <0x1100b000 0xc00>;
@@ -767,10 +770,33 @@
 			gpio-controller;
 			#gpio-cells = <0x02>;
 			gpio-ranges = <0x0d 0x00 0x00 0xbc>;
+
 			interrupt-controller;
 			#interrupt-cells = <0x02>;
 			interrupts = <0x00 0xef 0x04 0x00>;
 			phandle = <0x0d>;
+
+			/* GPIO12 powers the gate IC that feeds the speaker
+			 * amplifier (stock DT: gate-power-gpios = <&pio 12 0>).
+			 * Without it the speaker amp stays unpowered.
+			 */
+			gate_ic_power: gate-ic-power {
+				gpio-hog;
+				gpios = <0x0c 0x00>;
+				output-high;
+				line-name = "gate-ic-power";
+			};
+
+			/* GPIO153 enables the speaker amplifier (stock overlay:
+			 * fs1559_dual_speaker_gpio = <&pio 153 0>). It is
+			 * required in addition to the gate IC power above.
+			 */
+			spk_amp_enable: spk-amp-enable {
+				gpio-hog;
+				gpios = <0x99 0x00>;
+				output-high;
+				line-name = "spk-amp-enable";
+			};
 					mmc1-pins {
 				phandle = <0x14>;
 
@@ -1292,7 +1318,7 @@ ufshci@11270000 {
 		height = <0x960>;
 		stride = <0x10e0>;
 		format = "a8r8g8b8";
-		/* физический размер панели ~6.7" (1080x2400, 20:9) */
+		/* physical panel size ~6.7" (1080x2400, 20:9) */
 		width-mm = <0x46>;
 		height-mm = <0x9b>;
 	};
