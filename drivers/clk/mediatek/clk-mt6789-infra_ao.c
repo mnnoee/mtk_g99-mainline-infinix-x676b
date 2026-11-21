@@ -176,6 +176,13 @@ static u16 infra_ao_rst_ofs[] = {
 	INFRA_RST1_SET_OFFSET, 
 	INFRA_RST2_SET_OFFSET, 
 	INFRA_RST3_SET_OFFSET, 
+	/* bank 4 is referenced by MT6789_INFRA_RST3_UFS_CRYPTO_SWRST in
+	 * infra_ao_idx_map; without this entry reset_control_assert() reads
+	 * past the end of the array (found with KASAN:
+	 * "global-out-of-bounds in mtk_reset_assert_set_clr",
+	 * variable infra_ao_rst_ofs+0x8).
+	 */
+	INFRA_RST4_SET_OFFSET, 
 };
 
 static u16 infra_ao_idx_map[] = {
