@@ -31,8 +31,12 @@
 #define MT6358_NAG_VALID		BIT(15)
 #define MT6358_NAG_VAL_MASK		GENMASK(14, 0)
 
-/* mV = raw * 1800 (VREF, mV) * 10 * 3 / 32768 */
-#define MT6358_NAG_SCALE_NUM		(1800ULL * 10 * 3)
+/*
+ * The vendor formula returns tenths of a millivolt:
+ *   raw * 1800 (VREF, mV) * 10 * 3 / 32768
+ * Drop the *10 to get real millivolts.
+ */
+#define MT6358_NAG_SCALE_NUM		(1800ULL * 3)
 #define MT6358_NAG_SCALE_DEN		32768
 
 #define MT6358_BAT_RETRIES		8
