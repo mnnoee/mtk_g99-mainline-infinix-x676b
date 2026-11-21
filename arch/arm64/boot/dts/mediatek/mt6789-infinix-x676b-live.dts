@@ -302,6 +302,16 @@
 				mt6358keys: mt6358keys {
 					compatible = "mediatek,mt6358-keys";
 				};
+
+				mt6358adc: mt6358-adc {
+					compatible = "mediatek,mt6358-auxadc";
+					#io-channel-cells = <0x01>;
+				};
+
+				mt6358bat: battery {
+					compatible = "mediatek,mt6358-battery";
+					mediatek,charger = <&rt9471_chg>;
+				};
 			};
 		};
 
@@ -769,6 +779,24 @@ ufshci@11270000 {
 			clock-names = "main", "dma";
 			clocks = <0x30 0x1>, <0x11 61>;
 			clock-div = <0x01>;
+			#address-cells = <0x01>;
+			#size-cells = <0x00>;
+
+			rt9471_chg: charger@53 {
+				compatible = "richtek,rt9471";
+				reg = <0x53>;
+				wakeup-source;
+				interrupts-extended = <0x0d 0x04 0x02>;
+				status = "okay";
+
+				usb-otg-vbus-regulator {
+					regulator-name = "usb-otg-vbus";
+					regulator-min-microvolt = <0x4a0150>;
+					regulator-max-microvolt = <0x50df20>;
+					regulator-min-microamp = <0x7a120>;
+					regulator-max-microamp = <0x124f80>;
+				};
+			};
 		};
 
 		i2c@1101a000 {
