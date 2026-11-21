@@ -122,6 +122,18 @@ config BATTERY_CHAGALL
 	  This driver can also be built as a module. If so, the module will be
 	  called chagall-battery.
 
+config BATTERY_MT6358
+	tristate "MediaTek MT6358/MT6366 PMIC battery monitor"
+	depends on MFD_MT6397
+	help
+	  Say Y here to report the battery voltage from the NAG ADC of the
+	  MT6358/MT6366 PMIC and estimate the state of charge from the
+	  open circuit voltage. Charging status is taken from the charger
+	  power supply referenced by the "power-supplies" property.
+
+	  This driver can also be built as a module. If so, the module will
+	  be called mt6358_battery.
+
 config BATTERY_CPCAP
 	tristate "Motorola CPCAP PMIC battery driver"
 	depends on MFD_CPCAP && IIO
