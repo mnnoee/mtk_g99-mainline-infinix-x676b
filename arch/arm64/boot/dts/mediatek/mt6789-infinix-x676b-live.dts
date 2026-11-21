@@ -626,6 +626,33 @@
 				<0x10 164>,
 				<0x10 142>,
 				<0x10 55>;
+				pinctrl-names = "aud_clk_mosi_off", "aud_clk_mosi_on",
+						"aud_clk_miso_off", "aud_clk_miso_on",
+						"aud_dat_mosi_off", "aud_dat_mosi_on",
+						"aud_dat_miso0_off", "aud_dat_miso0_on",
+						"aud_dat_miso1_off", "aud_dat_miso1_on",
+						"aud_gpio_i2s0_off", "aud_gpio_i2s0_on",
+						"aud_gpio_i2s3_off", "aud_gpio_i2s3_on",
+						"vow_dat_miso_off", "vow_dat_miso_on",
+						"vow_clk_miso_off", "vow_clk_miso_on";
+				pinctrl-0 = <&aud_clk_mosi_off>;
+				pinctrl-1 = <&aud_clk_mosi_on>;
+				pinctrl-2 = <&aud_clk_miso_off>;
+				pinctrl-3 = <&aud_clk_miso_on>;
+				pinctrl-4 = <&aud_dat_mosi_off>;
+				pinctrl-5 = <&aud_dat_mosi_on>;
+				pinctrl-6 = <&aud_dat_miso0_off>;
+				pinctrl-7 = <&aud_dat_miso0_on>;
+				pinctrl-8 = <&aud_dat_miso1_off>;
+				pinctrl-9 = <&aud_dat_miso1_on>;
+				pinctrl-10 = <&aud_gpio_i2s0_off>;
+				pinctrl-11 = <&aud_gpio_i2s0_on>;
+				pinctrl-12 = <&aud_gpio_i2s3_off>;
+				pinctrl-13 = <&aud_gpio_i2s3_on>;
+				pinctrl-14 = <&vow_dat_miso_off>;
+				pinctrl-15 = <&vow_dat_miso_on>;
+				pinctrl-16 = <&vow_clk_miso_off>;
+				pinctrl-17 = <&vow_clk_miso_on>;
 				clock-names = 
 				      "aud_afe_clk",
 				      "aud_dac_clk",
@@ -747,6 +774,205 @@
 					};
 			};
 
+
+
+			aud_clk_mosi_off: aud_clk_mosi_off {
+
+				pins_cmd0_dat {
+					pinmux = <0xa900>;
+					input-enable;
+					bias-pull-down;
+				};
+			};
+
+			aud_clk_mosi_on: aud_clk_mosi_on {
+
+				pins_cmd0_dat {
+					pinmux = <0xa901>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+			};
+
+			aud_clk_miso_off: aud_clk_miso_off {
+
+				pins_cmd0_dat {
+					pinmux = <0xad00>;
+					input-enable;
+					bias-pull-down;
+				};
+			};
+
+			aud_clk_miso_on: aud_clk_miso_on {
+
+				pins_cmd0_dat {
+					pinmux = <0xad01>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+			};
+
+			aud_dat_mosi_off: aud_dat_mosi_off {
+
+				pins_cmd0_dat {
+					pinmux = <0xab00>;
+					input-enable;
+					bias-pull-down;
+				};
+
+				pins_cmd1_dat {
+					pinmux = <0xac00>;
+					input-enable;
+					bias-pull-down;
+				};
+			};
+
+			aud_dat_mosi_on: aud_dat_mosi_on {
+
+				pins_cmd0_dat {
+					pinmux = <0xab01>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+
+				pins_cmd1_dat {
+					pinmux = <0xac01>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+			};
+
+			aud_dat_miso0_off: aud_dat_miso0_off {
+
+				pins_cmd1_dat {
+					pinmux = <0xaf00>;
+					input-enable;
+					bias-pull-down;
+				};
+			};
+
+			aud_dat_miso0_on: aud_dat_miso0_on {
+
+				pins_cmd1_dat {
+					pinmux = <0xaf01>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+			};
+
+			aud_dat_miso1_off: aud_dat_miso1_off {
+
+				pins_cmd1_dat {
+					pinmux = <0xb000>;
+					input-enable;
+					bias-disable;
+				};
+			};
+
+			aud_dat_miso1_on: aud_dat_miso1_on {
+
+				pins_cmd1_dat {
+					pinmux = <0xb001>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+			};
+
+			aud_gpio_i2s0_off: aud_gpio_i2s0_off {
+
+				pins_cmd1_dat {
+					pinmux = <0x3500>;
+					input-enable;
+					bias-pull-down;
+				};
+			};
+
+			aud_gpio_i2s0_on: aud_gpio_i2s0_on {
+
+				pins_cmd1_dat {
+					pinmux = <0x3502>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+			};
+
+			aud_gpio_i2s3_off: aud_gpio_i2s3_off {
+
+				pins_cmd1_dat {
+					pinmux = <0x3200>;
+					input-enable;
+					bias-pull-down;
+				};
+
+				pins_cmd2_dat {
+					pinmux = <0x3300>;
+					input-enable;
+					bias-pull-down;
+				};
+
+				pins_cmd3_dat {
+					pinmux = <0x3400>;
+					input-enable;
+					bias-pull-down;
+				};
+			};
+
+			aud_gpio_i2s3_on: aud_gpio_i2s3_on {
+
+				pins_cmd1_dat {
+					pinmux = <0x3202>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+
+				pins_cmd2_dat {
+					pinmux = <0x3302>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+
+				pins_cmd3_dat {
+					pinmux = <0x3402>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+			};
+
+			vow_dat_miso_off: vow_dat_miso_off {
+
+				pins_cmd1_dat {
+					pinmux = <0xaf00>;
+					input-enable;
+					bias-pull-down;
+				};
+			};
+
+			vow_dat_miso_on: vow_dat_miso_on {
+
+				pins_cmd1_dat {
+					pinmux = <0xaf04>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+			};
+
+			vow_clk_miso_off: vow_clk_miso_off {
+
+				pins_cmd1_dat {
+					pinmux = <0xb000>;
+					input-enable;
+					bias-pull-down;
+				};
+			};
+
+			vow_clk_miso_on: vow_clk_miso_on {
+
+				pins_cmd1_dat {
+					pinmux = <0xb004>;
+					input-schmitt-enable;
+					bias-disable;
+				};
+			};
 };
 
 		serial@11002000 {
