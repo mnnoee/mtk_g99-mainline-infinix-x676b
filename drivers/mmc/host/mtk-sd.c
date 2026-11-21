@@ -3087,7 +3087,19 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		host->dma_mask = DMA_BIT_MASK(36);
 	else
 		host->dma_mask = DMA_BIT_MASK(32);
-	mmc_dev(mmc)->dma_mask = &host->dma_mask;
+
+	/*
+	 * Do not point the device dma_mask into driver-private memory:
+	 * host lives inside the mmc_host allocation which devres frees on
+	 * unbind, so a rebind would dereference freed memory from
+	 * of_dma_configure_id().  Let the DMA API keep the mask inside the
+	 * device instead.
+	 */
+	ret = dma_set_mask_and_coherent(mmc_dev(mmc), host->dma_mask);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to set DMA mask: %d\n", ret);
+		goto release_mem;
+	}
 
 	host->timeout_clks = 3 * 1048576;
 	host->dma.gpd = dma_alloc_coherent(&pdev->dev,
