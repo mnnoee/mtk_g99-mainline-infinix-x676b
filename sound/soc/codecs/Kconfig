@@ -1798,6 +1798,13 @@ config SND_SOC_RT1320_SDW
 	select REGMAP_SOUNDWIRE
 	select REGMAP_SOUNDWIRE_MBQ
 
+config SND_SOC_RT5512
+	tristate "Richtek RT5512 speaker amplifier"
+	depends on I2C
+	help
+	  Enable support for the Richtek RT5512 boosted class-D speaker
+	  amplifier with I2S/TDM input.
+
 config SND_SOC_RT5514
 	tristate
 	depends on I2C
