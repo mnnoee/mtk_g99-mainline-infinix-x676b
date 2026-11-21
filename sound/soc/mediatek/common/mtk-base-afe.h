@@ -114,6 +114,7 @@ struct mtk_base_afe {
 
 	struct mtk_base_afe_memif *memif;
 	int memif_size;
+	bool is_memif_bit_banding;
 	struct mtk_base_afe_irq *irqs;
 	int irqs_size;
 	int memif_32bit_supported;

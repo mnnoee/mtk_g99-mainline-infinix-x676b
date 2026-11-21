@@ -12,6 +12,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/pm_runtime.h>
+#include <linux/mfd/syscon.h>
 #include <sound/soc.h>
 
 #include "../common/mtk-afe-platform-driver.h"
@@ -139,8 +140,7 @@ int mt6789_fe_trigger(struct snd_pcm_substream *substream, int cmd,
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 		if (mt6789_afe_need_triggered(memif)) {
-			ret = mtk_memif_set_enable(afe, id);
-			if (ret) {
+			ret = mtk_memif_set_enable(afe, id);			if (ret) {
 				dev_err(afe->dev,
 					"%s(), error, id %d, memif enable, ret %d\n",
 					__func__, id, ret);
@@ -4945,6 +4945,28 @@ static ssize_t mt6789_debug_read_reg(char *buffer, int size, struct mtk_base_afe
 	return n;
 }
 
+static int mt6789_dai_memif_register(struct mtk_base_afe *afe)
+{
+	struct mtk_base_afe_dai *dai;
+
+	dai = devm_kzalloc(afe->dev, sizeof(*dai), GFP_KERNEL);
+	if (!dai)
+		return -ENOMEM;
+
+	list_add(&dai->list, &afe->sub_dais);
+
+	dai->dai_drivers = mt6789_memif_dai_driver;
+	dai->num_dai_drivers = ARRAY_SIZE(mt6789_memif_dai_driver);
+
+	dai->controls = mt6789_pcm_kcontrols;
+	dai->num_controls = ARRAY_SIZE(mt6789_pcm_kcontrols);
+	dai->dapm_widgets = mt6789_memif_widgets;
+	dai->num_dapm_widgets = ARRAY_SIZE(mt6789_memif_widgets);
+	dai->dapm_routes = mt6789_memif_routes;
+	dai->num_dapm_routes = ARRAY_SIZE(mt6789_memif_routes);
+	return 0;
+}
+
 typedef int (*dai_register_cb)(struct mtk_base_afe *);
 
 static const dai_register_cb dai_register_cbs[] = {
@@ -4954,6 +4976,7 @@ static const dai_register_cb dai_register_cbs[] = {
 	mt6789_dai_src_register,
 	mt6789_dai_pcm_register,
 	mt6789_dai_hostless_register,
+	mt6789_dai_memif_register,
 };
 
 static int mt6789_afe_pcm_dev_probe(struct platform_device *pdev)
@@ -4964,7 +4987,6 @@ static int mt6789_afe_pcm_dev_probe(struct platform_device *pdev)
 #endif
 	struct mtk_base_afe *afe;
 	struct mt6789_afe_private *afe_priv;
-	struct resource *res;
 	struct device *dev;
 #if !defined(SKIP_SB_SMC)
 	struct arm_smccc_res smccc_res;
@@ -5011,25 +5033,21 @@ static int mt6789_afe_pcm_dev_probe(struct platform_device *pdev)
 	 */
 	dev_pm_syscore_device(&pdev->dev, true);
 
-	/* regmap init */
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	/* Map the audsys register window (owned by the parent node) */
+	struct resource res;
 
-	afe->base_addr = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(afe->base_addr))
-		return PTR_ERR(afe->base_addr);
+	if (of_address_to_resource(pdev->dev.parent->of_node, 0, &res))
+		return -ENODEV;
 
-	/* enable clock for regcache get default value from hw */
-	pm_runtime_get_sync(&pdev->dev);
+	afe->base_addr = devm_ioremap(&pdev->dev, res.start,
+				      resource_size(&res));
+	if (!afe->base_addr)
+		return -ENOMEM;
 
 	afe->regmap = devm_regmap_init_mmio(&pdev->dev, afe->base_addr,
 					    &mt6789_afe_regmap_config);
 	if (IS_ERR(afe->regmap))
 		return PTR_ERR(afe->regmap);
-
-	pm_runtime_put_sync(&pdev->dev);
-
-	regcache_cache_only(afe->regmap, true);
-	regcache_mark_dirty(afe->regmap);
 
 	/* init gpio */
 	ret = mt6789_afe_gpio_init(afe);
@@ -5037,6 +5055,7 @@ static int mt6789_afe_pcm_dev_probe(struct platform_device *pdev)
 		dev_err(dev, "init gpio error\n");
 
 	/* init memif */
+	afe->is_memif_bit_banding = 1;
 	afe->memif_32bit_supported = 0;
 	afe->memif_size = MT6789_MEMIF_NUM;
 	afe->memif = devm_kcalloc(dev, afe->memif_size, sizeof(*afe->memif),

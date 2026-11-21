@@ -127,7 +127,7 @@ static int mt6789_mt6366_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 	struct mt6789_afe_private *afe_priv = afe->platform_priv;
 	struct snd_soc_component *codec_component =
-		snd_soc_rtdcom_lookup(rtd, CODEC_MT6358_NAME);
+		snd_soc_rtd_to_codec(rtd, 0)->component;
 	int phase;
 	unsigned int monitor = 0;
 	int test_done_1, test_done_2;
@@ -268,8 +268,13 @@ static int mt6789_mt6366_init(struct snd_soc_pcm_runtime *rtd)
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 	struct mt6789_afe_private *afe_priv = afe->platform_priv;
 	struct snd_soc_component *codec_component =
-		snd_soc_rtdcom_lookup(rtd, "mtk-codec-mt6358");
+		snd_soc_rtd_to_codec(rtd, 0)->component;
 	struct snd_soc_dapm_context *dapm = rtd->card->dapm;
+
+	if (!codec_component ||
+	    !of_device_is_compatible(codec_component->dev->of_node,
+				     "mediatek,mt6358-sound"))
+		return 0;
 
 	/* set mtkaif protocol */
 	mt6358_set_mtkaif_protocol(codec_component,
