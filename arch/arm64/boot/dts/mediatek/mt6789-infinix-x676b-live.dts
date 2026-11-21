@@ -302,6 +302,18 @@
 				mt6358regulator: mt6358regulator {
 					compatible = "mediatek,mt6358-regulator";
 
+					vcn18: vcn18 {
+						regulator-name = "vcn18";
+						regulator-min-microvolt = <1800000>;
+						regulator-max-microvolt = <1800000>;
+					};
+
+					vpa: vpa {
+						regulator-name = "vpa";
+						regulator-min-microvolt = <500000>;
+						regulator-max-microvolt = <3650000>;
+					};
+
 					mt6358_vproc11_reg: vproc11 {
 						regulator-name = "vproc11";
 						regulator-min-microvolt = <0x7a120>;
