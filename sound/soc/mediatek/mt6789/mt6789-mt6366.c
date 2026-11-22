@@ -8,6 +8,8 @@
 
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
+#include <linux/gpio/consumer.h>
+#include <linux/delay.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -30,6 +32,35 @@
  * mt6789_mt6366_spk_amp_event()
  */
 #define EXT_SPK_AMP_W_NAME "Ext_Speaker_Amp"
+
+/*
+ * The second (top / earpiece) speaker hangs on an FS1559VN Class-G
+ * amplifier.  The chip has no I2C control: its mode is latched by a
+ * one-wire pulse train on a single GPIO.  The stock machine driver uses
+ * "extamp_mode" (6) as the pulse count for music playback:
+ *
+ *   high 300us, low 20us, (count - 1) x [high 20us, low 20us], high
+ *
+ * Without this sequence the amplifier stays disabled and the receiver
+ * output of the codec is silent.
+ */
+static void mt6789_ext_amp_enable(struct gpio_desc *gpio, unsigned int count)
+{
+	gpiod_set_value_cansleep(gpio, 1);
+	udelay(300);
+	gpiod_set_value_cansleep(gpio, 0);
+	udelay(20);
+
+	while (--count) {
+		gpiod_set_value_cansleep(gpio, 1);
+		udelay(20);
+		gpiod_set_value_cansleep(gpio, 0);
+		udelay(20);
+	}
+
+	gpiod_set_value_cansleep(gpio, 1);
+	udelay(300);
+}
 
 static const char *const mt6789_spk_type_str[] = {MTK_SPK_NOT_SMARTPA_STR,
 						  MTK_SPK_RICHTEK_RT5509_STR,
@@ -1029,6 +1060,7 @@ static int mt6789_mt6366_dev_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = &mt6789_mt6366_soc_card;
 	struct device_node *platform_node, *spk_node;
+	struct gpio_desc *ext_amp_gpio;
 	int ret, i;
 	struct snd_soc_dai_link *dai_link;
 #if IS_ENABLED(CONFIG_MTK_SCP_AUDIO)
@@ -1111,10 +1143,28 @@ static int mt6789_mt6366_dev_probe(struct platform_device *pdev)
 	card->dev = &pdev->dev;
 
 	ret = devm_snd_soc_register_card(&pdev->dev, card);
-	if (ret)
+	if (ret) {
 		dev_err(&pdev->dev, "%s snd_soc_register_card fail %d\n",
 			__func__, ret);
-	return ret;
+		return ret;
+	}
+
+	/*
+	 * Latch the second speaker amplifier into music mode.  Done after the
+	 * card is registered so that the gate IC power (GPIO12) and the codec
+	 * are already up.
+	 */
+	ext_amp_gpio = devm_gpiod_get_optional(&pdev->dev, "fs1559-extamp",
+					       GPIOD_OUT_LOW);
+	if (IS_ERR(ext_amp_gpio)) {
+		dev_warn(&pdev->dev, "no fs1559-extamp-gpios: %ld\n",
+			 PTR_ERR(ext_amp_gpio));
+	} else if (ext_amp_gpio) {
+		mt6789_ext_amp_enable(ext_amp_gpio, 6);
+		dev_info(&pdev->dev, "second speaker amp enabled\n");
+	}
+
+	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

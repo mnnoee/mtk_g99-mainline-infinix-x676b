@@ -559,6 +559,7 @@ enum {
 	HP_MUX_HP,
 	HP_MUX_TEST_MODE,
 	HP_MUX_HP_IMPEDANCE,
+	HP_MUX_LOUD_DUAL_SPK,
 	HP_MUX_MASK = 0x7,
 };
 
@@ -568,6 +569,7 @@ static const char * const hp_in_mux_map[] = {
 	"Audio Playback",
 	"Test Mode",
 	"HP Impedance",
+	"Loud DualSPK Playback",
 };
 
 static int hp_in_mux_map_value[] = {
@@ -576,6 +578,7 @@ static int hp_in_mux_map_value[] = {
 	HP_MUX_HP,
 	HP_MUX_TEST_MODE,
 	HP_MUX_HP_IMPEDANCE,
+	HP_MUX_LOUD_DUAL_SPK,
 };
 
 static SOC_VALUE_ENUM_SINGLE_DECL(hpl_in_mux_map_enum,
@@ -603,18 +606,20 @@ enum {
 	RCV_MUX_OPEN = 0,
 	RCV_MUX_MUTE,
 	RCV_MUX_VOICE_PLAYBACK,
+	RCV_MUX_DUAL_VOICE_PLAYBACK,
 	RCV_MUX_TEST_MODE,
-	RCV_MUX_MASK = 0x3,
+	RCV_MUX_MASK = 0x7,
 };
 
 static const char * const rcv_in_mux_map[] = {
-	"Open", "Mute", "Voice Playback", "Test Mode"
+	"Open", "Mute", "Voice Playback", "Dual Voice Playback", "Test Mode"
 };
 
 static int rcv_in_mux_map_value[] = {
 	RCV_MUX_OPEN,
 	RCV_MUX_MUTE,
 	RCV_MUX_VOICE_PLAYBACK,
+	RCV_MUX_DUAL_VOICE_PLAYBACK,
 	RCV_MUX_TEST_MODE,
 };
 
@@ -1310,8 +1315,17 @@ static int mt_hp_event(struct snd_soc_dapm_widget *w,
 
 		if (mux == HP_MUX_HP)
 			mtk_hp_enable(priv);
-		else if (mux == HP_MUX_HPSPK)
+		else if (mux == HP_MUX_HPSPK) {
 			mtk_hp_spk_enable(priv);
+		} else if (mux == HP_MUX_LOUD_DUAL_SPK) {
+			/*
+			 * "Loud DualSPK Playback": the vendor codec enables
+			 * the extra analog function block used by the second
+			 * speaker as well as the normal HP/LO path.
+			 */
+			mtk_hp_spk_enable(priv);
+			regmap_write(priv->regmap, MT6358_AFUNC_AUD_CON0, 0xcfa1);
+		}
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
 		priv->dev_counter[device]--;
@@ -1327,7 +1341,8 @@ static int mt_hp_event(struct snd_soc_dapm_widget *w,
 
 		if (priv->mux_select[MUX_HP_L] == HP_MUX_HP)
 			mtk_hp_disable(priv);
-		else if (priv->mux_select[MUX_HP_L] == HP_MUX_HPSPK)
+		else if (priv->mux_select[MUX_HP_L] == HP_MUX_HPSPK ||
+			 priv->mux_select[MUX_HP_L] == HP_MUX_LOUD_DUAL_SPK)
 			mtk_hp_spk_disable(priv);
 
 		priv->mux_select[MUX_HP_L] = mux;
@@ -1353,6 +1368,16 @@ static int mt_rcv_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
+		/*
+		 * Vendor-specific "Dual Voice Playback" mode: this is what the
+		 * stock HAL uses for the second speaker (earpiece acting as a
+		 * speaker).  It needs an extra analog function block enabled
+		 * before the RCV path is powered up.
+		 */
+		if (snd_soc_dapm_kcontrol_get_value(w->kcontrols[0]) ==
+		    RCV_MUX_DUAL_VOICE_PLAYBACK)
+			regmap_write(priv->regmap, MT6358_AFUNC_AUD_CON0, 0xcfa1);
+
 		/* Reduce ESD resistance of AU_REFN */
 		regmap_write(priv->regmap, MT6358_AUDDEC_ANA_CON2, 0x4000);
 
@@ -2232,6 +2257,8 @@ static const struct snd_soc_dapm_route mt6358_dapm_routes[] = {
 	{"HPR Mux", "HP Impedance", "DACR"},
 	{"HPL Mux", "LoudSPK Playback", "DACL"},
 	{"HPR Mux", "LoudSPK Playback", "DACR"},
+	{"HPL Mux", "Loud DualSPK Playback", "DACL"},
+	{"HPR Mux", "Loud DualSPK Playback", "DACR"},
 
 	{"Headphone L", NULL, "HPL Mux"},
 	{"Headphone R", NULL, "HPR Mux"},
@@ -2241,6 +2268,7 @@ static const struct snd_soc_dapm_route mt6358_dapm_routes[] = {
 
 	/* Receiver Path */
 	{"RCV Mux", "Voice Playback", "DACL"},
+	{"RCV Mux", "Dual Voice Playback", "DACL"},
 	{"Receiver", NULL, "RCV Mux"},
 };
 
