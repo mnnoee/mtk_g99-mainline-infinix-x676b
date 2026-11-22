@@ -22,11 +22,12 @@ on a UFS partition, systemd.
 | PMIC | MT6366 via pwrap: regulators, RTC, power/reset keys, ADC |
 | CPU frequency | 2 clusters (6x A55 up to 2.0 GHz, 2x A76 up to 2.2 GHz), schedutil |
 | Thermal | MT6789 LVTS, 13 zones, 110 C critical trips |
-| Display | simpledrm + small DSI refresh helper (text console on the panel) |
+| Display | custom `x676b_drm` DRM/KMS module: fbcon on the ILI7835 AMOLED, OVL0 layer 1 scans the reserved DMA buffer at `0xfeabe000`, DCS 0x2C trigger every 16 ms |
 | Audio | MT6789 AFE + MT6358 codec; playback to the bottom speaker via the LoudSPK path, volume through `Lineout Volume`; works after reboot |
 | Charger | Richtek RT9470D via the `rt9471` driver: status, current/voltage limits, BC1.2, OTG boost |
 | Battery | `mt6358_battery` (v1): voltage + OCV capacity estimate, status from the charger |
 | Clock / reset | MT6789 CCU, fixed out-of-bounds in `infra_ao` reset offsets |
+| GPU | Panfrost binds the Mali-G57 (`13000000.gpu`) and registers a DRM node; GL/EGL userspace not tested yet |
 
 ### Not working
 
@@ -38,7 +39,6 @@ on a UFS partition, systemd.
 | Wi-Fi / Bluetooth | on-SoC CONNSYS, vendor 5.10 driver only |
 | Modem | vendor stack only |
 | Camera | no driver |
-| GPU | no Mali driver, simpledrm only |
 | cpuidle / suspend | not implemented, not tested |
 
 ## Device tree and DTB
@@ -58,6 +58,46 @@ dtc -I dts -O dtb -o mt6789-infinix-x676b-live.dtb mt6789-infinix-x676b-live.dts
 ```
 
 The DTS comments are in English so the reasoning is clear to other readers.
+
+## Display
+
+The panel is an Ilitek ILI7835 1080x2400 AMOLED in MIPI DSI command mode.
+U-Boot leaves the MMSYS pipeline, the DSI controller and the D-PHY
+initialized; the kernel only has to push frames.
+
+* **Scanout buffer**: `shared-dma-pool` node `display-fb@feabe000` in
+  `reserved-memory` (the middle of the three bootloader framebuffers),
+  referenced by `memory-region` in the `display@14000000` node.  The DRM
+  buffer therefore lands exactly at `0xfeabe000`, the address the bootloader
+  programs into OVL0.
+* **Driver**: out-of-tree `x676b_drm`
+  (`/workdir/git/heliog99/display/x676b-drm`), built against this tree and
+  loaded from `modules-load.d`.  It registers `drm_simple_display_pipe` +
+  `drm_gem_dma` + fbdev; `simple-framebuffer` is disabled in the DTB.
+* **Visible layer**: OVL0 **layer 1**.  `L1_CON` must be `0x20ff` (per-pixel
+  alpha off): fbcon writes XRGB with alpha = 0, so an alpha-enabled layer is
+  fully transparent and the screen stays black.
+* **Frame trigger**: reprogram OVL0 -> RDMA0 -> DITHER0 -> DSI0 and then send
+  DCS `0x2C` with `CMDQ_SIZE=0x8001` plus a `DSI_START` bit-0 toggle, from a
+  single periodic thread every 16 ms.  Do not trigger from atomic commits and
+  do not write `DSI_INTSTA`.
+* **`DSI_CON` bit 0 is the DSI reset**: it must be deasserted after any reset
+  pulse.  If it stays set the engine is held in reset: no frames and no DCS
+  commands reach the panel (looks like a dead panel until a power cycle).
+
+## SD card (MSDC1)
+
+* Controller `11240000.mmc`, driver `mtk-sd` (`CONFIG_MMC_MTK=m`), host `mmc0`.
+* Tested with a 128 GiB SDXC card: `mmc0: new high speed SDXC card at address
+  b368`, `mmcblk0: mmc0:b368 SDABC 117 GiB`; 50 MHz clock (48 MHz actual),
+  4-bit bus, 3.3 V, SD high-speed timing, `/dev/mmcblk0` and
+  `/dev/mmcblk0p1`.
+* Card detect is an active-high GPIO routed through EINT (GIC SPI 244), so
+  insertion and removal are hotplug events.
+* A single `mmc0: error -84 whilst initialising SD card` at boot is the first
+  CMD8 attempt; the retry succeeds and the card enumerates normally.
+* The same slot is still not usable from U-Boot; the Linux bring-up does not
+  depend on it (DTS commit `0611a4104`).
 
 ## Building
 
@@ -93,7 +133,8 @@ Important configuration choices for this device:
 * **Clock / reset**: `infra_ao` reset offset fix (KASAN out-of-bounds),
   audiosys clock driver now populates the AFE child device.
 * **DTS**: Infinix X676B device nodes, reserved-memory (`ranges;`),
-  framebuffer, GPIO hogs for the speaker amp power/enable, prebuilt DTB.
+  `display-fb` DMA pool for the scanout buffer, GPIO hogs for the speaker
+  amp power/enable, prebuilt DTB.
 
 ## Documentation
 
