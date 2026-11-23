@@ -15,6 +15,8 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6789[] = {
 		.name = "md",
 		.sta_mask = BIT(0),
 		.ctl_offs = 0x300,
+		.pwr_sta_offs = 0x016c,
+		.pwr_sta2nd_offs = 0x0170,
 		.ext_buck_iso_offs = 0x398,
 		.ext_buck_iso_mask = 0x3,
 		.bp_cfg = {
@@ -26,6 +28,8 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6789[] = {
 		.name = "conn",
 		.sta_mask = BIT(1),
 		.ctl_offs = 0x304,
+		.pwr_sta_offs = 0x016c,
+		.pwr_sta2nd_offs = 0x0170,
 		.bp_cfg = {
 			BUS_PROT_WR_IGN(INFRA, MT6789_TOP_AXI_PROT_EN_CONN, 0x02A0, 0x02A4, 0x0228),
 			BUS_PROT_WR_IGN(INFRA, MT6789_TOP_AXI_PROT_EN_CONN_2ND, 0x02A0, 0x02A4, 0x0228),
