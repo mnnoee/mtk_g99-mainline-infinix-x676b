@@ -4778,6 +4778,9 @@ static int hci_get_mws_transport_config_sync(struct hci_dev *hdev)
 /* Check for Synchronization Train support */
 static int hci_read_sync_train_params_sync(struct hci_dev *hdev)
 {
+	if (hci_test_quirk(hdev, HCI_QUIRK_BROKEN_READ_SYNC_TRAIN_PARAMS))
+		return 0;
+
 	if (!lmp_sync_train_capable(hdev))
 		return 0;
 

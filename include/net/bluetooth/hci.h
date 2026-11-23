@@ -378,6 +378,14 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
 
+	/* When this quirk is set, HCI_OP_READ_SYNC_TRAIN_PARAMS is skipped.
+	 * The MT6631 advertises LMP sync-train support but returns Command
+	 * Disallowed for the command, which otherwise aborts hci_init_sync().
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_BROKEN_READ_SYNC_TRAIN_PARAMS,
+
 	__HCI_NUM_QUIRKS,
 };
 
