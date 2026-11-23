@@ -1200,6 +1200,7 @@ static int l2cap_sock_recvmsg(struct socket *sock, struct msghdr *msg,
 {
 	struct sock *sk = sock->sk;
 	struct l2cap_pinfo *pi = l2cap_pi(sk);
+	struct l2cap_chan *chan = NULL;
 	int err;
 
 	if (unlikely(flags & MSG_ERRQUEUE))
@@ -1228,6 +1229,13 @@ static int l2cap_sock_recvmsg(struct socket *sock, struct msghdr *msg,
 		goto done;
 	}
 
+	/* Hold the channel across the unlocked recv: a disconnect may
+	 * otherwise free it while bt_sock_recvmsg() sleeps, and the
+	 * rx_avail publication below would use freed memory.
+	 */
+	if (pi->chan)
+		chan = l2cap_chan_hold_unless_zero(pi->chan);
+
 	release_sock(sk);
 
 	if (sock->type == SOCK_STREAM)
@@ -1235,14 +1243,18 @@ static int l2cap_sock_recvmsg(struct socket *sock, struct msghdr *msg,
 	else
 		err = bt_sock_recvmsg(sock, msg, len, flags);
 
-	if (pi->chan->mode != L2CAP_MODE_ERTM &&
-	    pi->chan->mode != L2CAP_MODE_LE_FLOWCTL &&
-	    pi->chan->mode != L2CAP_MODE_EXT_FLOWCTL)
+	if (!chan || (chan->mode != L2CAP_MODE_ERTM &&
+		      chan->mode != L2CAP_MODE_LE_FLOWCTL &&
+		      chan->mode != L2CAP_MODE_EXT_FLOWCTL)) {
+		if (chan)
+			l2cap_chan_put(chan);
 		return err;
+	}
 
 	lock_sock(sk);
 
-	l2cap_publish_rx_avail(pi->chan);
+	if (chan == pi->chan && chan->data == sk)
+		l2cap_publish_rx_avail(chan);
 
 	/* Attempt to put pending rx data in the socket buffer */
 	while (!list_empty(&pi->rx_busy)) {
@@ -1260,12 +1272,15 @@ static int l2cap_sock_recvmsg(struct socket *sock, struct msghdr *msg,
 	 * available.  This avoids resending large numbers of
 	 * frames.
 	 */
-	if (test_bit(CONN_LOCAL_BUSY, &pi->chan->conn_state) &&
+	if (chan == pi->chan && chan->data == sk &&
+	    test_bit(CONN_LOCAL_BUSY, &chan->conn_state) &&
 	    atomic_read(&sk->sk_rmem_alloc) <= sk->sk_rcvbuf >> 1)
-		l2cap_chan_busy(pi->chan, 0);
+		l2cap_chan_busy(chan, 0);
 
 done:
 	release_sock(sk);
+	if (chan)
+		l2cap_chan_put(chan);
 	return err;
 }
 
