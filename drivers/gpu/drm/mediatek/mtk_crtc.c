@@ -14,10 +14,13 @@
 #include <linux/soc/mediatek/mtk-mutex.h>
 
 #include <asm/barrier.h>
+#include <asm/neon.h>
+#include <asm/simd.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_fb_dma_helper.h>
+#include <drm/drm_format_helper.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
@@ -156,32 +159,79 @@ static void mtk_crtc_ddp_irq(void *data);
  * is XRGB8888 (32bpp). Convert the scanout buffer to packed RGB888 for the
  * RDMA memory-mode path.
  */
+/*
+ * NEON version of the XRGB8888 -> packed RGB888 conversion. The scalar
+ * and DRM-helper loops are byte oriented and cost most of a CPU core at
+ * 30 fps; ld4/st3 move 16 pixels per iteration.
+ */
+static void mtk_crtc_cmd_mode_convert_neon(u8 *dst, const u8 *src,
+					   unsigned int width,
+					   unsigned int height,
+					   unsigned int src_pitch)
+{
+	unsigned int x, y;
+
+	kernel_neon_begin(NULL);
+	for (y = 0; y < height; y++) {
+		const u8 *s = src + (size_t)y * src_pitch;
+		u8 *d = dst + (size_t)y * width * 3;
+
+		for (x = 0; x + 16 <= width; x += 16) {
+			asm volatile(
+				"ld4 {v0.16b, v1.16b, v2.16b, v3.16b}, [%0], #64\n"
+				"st3 {v0.16b, v1.16b, v2.16b}, [%1], #48\n"
+				: "+r"(s), "+r"(d)
+				:
+				: "v0", "v1", "v2", "v3", "memory");
+		}
+		for (; x < width; x++) {
+			d[0] = s[0];
+			d[1] = s[1];
+			d[2] = s[2];
+			s += 4;
+			d += 3;
+		}
+	}
+	kernel_neon_end(NULL);
+}
+
 static void mtk_crtc_cmd_mode_convert(struct mtk_crtc *mtk_crtc,
 				      struct drm_framebuffer *fb)
 {
 	struct drm_gem_dma_object *obj = drm_fb_dma_get_gem_obj(fb, 0);
-	unsigned int h = fb->height, w = fb->width;
 	const u8 *src;
-	u8 *dst;
-	unsigned int x, y;
 
 	if (!mtk_crtc->cmd_conv_buf || !obj || !obj->vaddr)
 		return;
 
 	src = (const u8 *)obj->vaddr + fb->offsets[0];
-	dst = mtk_crtc->cmd_conv_buf;
 
-	for (y = 0; y < h; y++) {
-		const u32 *s = (const u32 *)(src + (size_t)y * fb->pitches[0]);
-		u8 *d = dst + (size_t)y * w * 3;
+	if (may_use_simd()) {
+		mtk_crtc_cmd_mode_convert_neon(mtk_crtc->cmd_conv_buf, src,
+					       fb->width, fb->height,
+					       fb->pitches[0]);
+		return;
+	}
 
-		for (x = 0; x < w; x++) {
-			u32 px = s[x];
+	{
+		struct drm_format_conv_state fmtcnv_state =
+			DRM_FORMAT_CONV_STATE_INIT;
+		struct iosys_map dst, srcmap;
+		unsigned int dst_pitch[1];
+		struct drm_rect clip;
 
-			d[3 * x + 0] = px & 0xff;
-			d[3 * x + 1] = (px >> 8) & 0xff;
-			d[3 * x + 2] = (px >> 16) & 0xff;
-		}
+		clip.x1 = 0;
+		clip.y1 = 0;
+		clip.x2 = fb->width;
+		clip.y2 = fb->height;
+		dst_pitch[0] = fb->width * 3;
+
+		iosys_map_set_vaddr(&srcmap, (void *)src);
+		iosys_map_set_vaddr(&dst, mtk_crtc->cmd_conv_buf);
+
+		drm_fb_xrgb8888_to_rgb888(&dst, dst_pitch, &srcmap, fb, &clip,
+					  &fmtcnv_state);
+		drm_format_conv_state_release(&fmtcnv_state);
 	}
 }
 
