@@ -138,6 +138,12 @@ static void mtk_drm_finish_page_flip(struct mtk_crtc *mtk_crtc)
 
 static bool cmd_tick = true;
 static bool cmd_ddp_irq = false;
+static bool cmd_memory_mode = true;
+module_param(cmd_memory_mode, bool, 0644);
+MODULE_PARM_DESC(cmd_memory_mode, "Pull frames through RDMA memory mode (software RGB888 conversion)");
+static unsigned int cmd_period_ms = 33;
+module_param(cmd_period_ms, uint, 0644);
+MODULE_PARM_DESC(cmd_period_ms, "Command-mode frame period in ms");
 module_param(cmd_ddp_irq, bool, 0644);
 MODULE_PARM_DESC(cmd_ddp_irq, "Apply pending CRTC config from the command-mode tick");
 module_param(cmd_tick, bool, 0644);
@@ -198,42 +204,53 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	 * page flips. Command mode panels get no hardware vblank, so we run
 	 * it from the trigger tick.
 	 */
-	if (cmd_ddp_irq)
-		mtk_crtc_ddp_irq(&mtk_crtc->base);
-	else
-		mtk_drm_finish_page_flip(mtk_crtc);
-
-	/*
-	 * MT6789 command mode: pull the frame from DRAM through RDMA
-	 * (memory mode) - verified on hardware to be the path that actually
-	 * feeds the DSI 0x2C frame request.
-	 */
 	{
 		struct drm_plane *plane = &mtk_crtc->planes[0];
 		struct drm_plane_state *ps = plane->state;
+		bool need_config = false;
 
-		if (ps && ps->fb && ps->crtc) {
+		if (cmd_ddp_irq && ps && ps->fb) {
 			dma_addr_t addr = drm_fb_dma_get_gem_addr(ps->fb, ps, 0);
 
-			/* Re-arming RDMA every frame aborts the running
-			 * transfer, so only reprogram it when the buffer
-			 * actually changes.
-			 */
-			if (mtk_crtc->cmd_conv_buf) {
-				mtk_crtc_cmd_mode_convert(mtk_crtc, ps->fb);
-				for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
-					struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
+			if (addr != mtk_crtc->cmd_fb_addr) {
+				struct mtk_plane_state *pstate =
+					to_mtk_plane_state(plane->state);
 
-					if (comp->funcs && comp->funcs->mem_config) {
-						comp->funcs->mem_config(comp->dev,
-							mtk_crtc->cmd_conv_dma,
-							ps->fb->width * 3,
-							DRM_FORMAT_RGB888);
-						break;
-					}
+				pstate->pending.config = true;
+				mtk_crtc->pending_planes = true;
+				mtk_crtc->cmd_fb_addr = addr;
+				need_config = true;
+			}
+		}
+
+		/*
+		 * Apply pending CRTC/OVL config only when the scanout buffer
+		 * changed: running ddp_config while frames are flowing breaks
+		 * the transfer. Page flips are completed every tick.
+		 */
+		if (need_config)
+			mtk_crtc_ddp_irq(&mtk_crtc->base);
+		else
+			mtk_drm_finish_page_flip(mtk_crtc);
+	}
+
+	if (cmd_memory_mode) {
+		struct drm_plane *plane = &mtk_crtc->planes[0];
+		struct drm_plane_state *ps = plane->state;
+
+		if (ps && ps->fb && mtk_crtc->cmd_conv_buf) {
+			mtk_crtc_cmd_mode_convert(mtk_crtc, ps->fb);
+			for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
+				struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
+
+				if (comp->funcs && comp->funcs->mem_config) {
+					comp->funcs->mem_config(comp->dev,
+						mtk_crtc->cmd_conv_dma,
+						ps->fb->width * 3,
+						DRM_FORMAT_RGB888);
+					break;
 				}
 			}
-			(void)addr;
 		}
 	}
 
@@ -251,7 +268,8 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	mtk_ddp_comp_trigger(mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1]);
 
 resched:
-	schedule_delayed_work(&mtk_crtc->cmd_mode_work, msecs_to_jiffies(33));
+	schedule_delayed_work(&mtk_crtc->cmd_mode_work,
+			      msecs_to_jiffies(cmd_period_ms));
 }
 
 static void mtk_crtc_destroy(struct drm_crtc *crtc)
