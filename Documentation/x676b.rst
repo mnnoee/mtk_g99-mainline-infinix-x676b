@@ -1,0 +1,119 @@
+.. SPDX-License-Identifier: GPL-2.0
+
+=========================================
+Infinix X676B (MediaTek MT6789) support
+=========================================
+
+This kernel tree carries the device support for the Infinix X676B
+("Note 12 Pro"), a MediaTek MT6789 (Helio G99) phone.  This document
+describes what the kernel side provides: device trees, drivers and
+driver-specific parameters.  It is not a project log.
+
+Device tree
+===========
+
+The board is described by::
+
+    arch/arm64/boot/dts/mediatek/mt6789-x676b.dts
+    arch/arm64/boot/dts/mediatek/mt6789-x676b.dtsi   (if present)
+
+and the MT6789 SoC dtsi.  The display part wires up:
+
+* ``mmsys`` (``mediatek,mt6789-mmsys``) with the routing table from
+  ``drivers/soc/mediatek/mt6789-mmsys.h``;
+* ``mutex`` (``mediatek,mt6789-mutex``);
+* ``ovl0`` / ``rdma0`` / ``dither0`` display components;
+* ``dsi0`` (``mediatek,mt6789-dsi``) and its ``dsi-phy``;
+* the ``panel@0`` node with ``ilitek,ili7835``.
+
+Display drivers
+===============
+
+``mediatek-drm`` (``drivers/gpu/drm/mediatek/``)
+    DRM/KMS driver.  The MT6789 command-mode path lives in
+    ``mtk_crtc.c``: a delayed work triggers one panel frame every
+    ``cmd_period_ms`` because the ILI7835 is a command-mode panel
+    (GRAM) and mainline has no frame trigger for it.
+
+``mtk_dsi.c``
+    DSI host.  MT6789 specific data: command queue register at
+    ``0xd00``, ``has_size_ctl``, ``support_per_frame_lp``,
+    ``poll_cmd_done``, ``no_vm_cmd`` and an MT6789 PSCTRL quirk.
+    ``mtk_dsi_ddp_trigger()`` sends DCS ``0x2C`` (write memory start)
+    and pulses ``DSI_START``.
+
+``mtk_disp_rdma.c``
+    RDMA0.  ``mtk_rdma_set_memory()`` puts RDMA into memory mode and
+    points it at a packed RGB888 buffer, which is what actually feeds
+    the DSI in command mode.
+
+``mtk_disp_ovl.c``
+    OVL0.  ``mtk_ovl_set_scanout()`` programs both layers for the
+    (currently unused) direct OVL to RDMA path.
+
+``mtk_disp_dither.c``, ``mtk_disp_ovl_adaptor.c``
+    Standard helpers used by the MT6789 pipeline.
+
+``mtk_gem.c``
+    GEM buffers.  On this platform the CPU reads the scanout buffer in
+    the command-mode tick, so buffers are allocated as cacheable
+    non-coherent DMA memory (``dma_alloc_noncoherent()``) instead of
+    write-combined memory.
+
+``mmsys`` / ``mutex``
+    ``drivers/soc/mediatek/mtk-mmsys.c`` and ``mtk-mutex.c`` with the
+    MT6789 tables (routing, mutex MOD/SOF, software MOD shadow).
+
+Panel and PHY
+=============
+
+``drivers/gpu/drm/panel/panel-ilitek-ili7835.c``
+    1080x2400 panel driver: reset and bias GPIOs (85/64), the vendor
+    init sequence, DCS ``0x11``/``0x29`` and ``0x51`` brightness.
+
+``drivers/phy/mediatek/phy-mtk-mipi-dsi.c``
+    MIPI D-PHY for MT6789, 4 lanes, 1006 Mbit/s per lane with the
+    default mode timing.
+
+Module parameters
+=================
+
+``mediatek_drm`` exposes:
+
+``cmd_tick`` (bool, default 1)
+    Enable the command-mode frame trigger work.
+
+``cmd_period_ms`` (uint, default 33)
+    Frame period in milliseconds.
+
+``cmd_memory_mode`` (bool, default 1)
+    Pull frames through RDMA memory mode with an RGB888 conversion
+    buffer.  With 0 the driver programs OVL directly instead.
+
+``cmd_ddp_irq`` (bool, default 0)
+    Apply pending CRTC/OVL configuration from the trigger tick.
+    Must stay off while frames are flowing: reprogramming the
+    pipeline during a transfer wedges the DSI.
+
+Building
+========
+
+::
+
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j12 Image modules
+
+There are two configurations in use: a regular one and a debug one
+(``CONFIG_KASAN``/``CONFIG_KGDB``/``CONFIG_DEBUG_INFO_DWARF5``).
+The two produce incompatible ``struct module`` layouts, so load only
+modules built with the same configuration as the running kernel.
+
+Known limitations
+=================
+
+* The command-mode tick runs at ``cmd_period_ms`` (33 ms by default).
+  60 Hz is not usable yet: one frame is ~7.78 MiB and the D-PHY runs
+  at 1006 Mbit/s over four lanes, i.e. ~15.6 ms of pure payload with
+  no margin for the frame period.
+* The direct OVL to RDMA path (``cmd_memory_mode=0``) does not survive
+  repeated software triggers; frames have to go through RDMA memory
+  mode.  A GCE/TE based trigger would be needed for direct mode.
