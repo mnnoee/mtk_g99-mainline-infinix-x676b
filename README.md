@@ -22,7 +22,7 @@ on a UFS partition, systemd.
 | PMIC | MT6366 via pwrap: regulators, RTC, power/reset keys, ADC |
 | CPU frequency | 2 clusters (6x A55 up to 2.0 GHz, 2x A76 up to 2.2 GHz), schedutil |
 | Thermal | MT6789 LVTS, 13 zones, 110 C critical trips |
-| Display | custom `x676b_drm` DRM/KMS module: fbcon on the ILI7835 AMOLED, OVL0 layer 1 scans the reserved DMA buffer at `0xfeabe000`, DCS 0x2C trigger every 16 ms |
+| Display | mainline `mediatek-drm` + `mtk_dsi` + new `panel-ilitek-ili7835` driver: fbcon on the 1080x2400 AMOLED, RDMA memory mode, 33 ms command-mode tick (30 fps), CPU cost ~14% of one core |
 | Audio | MT6789 AFE + MT6358 codec; playback to the bottom speaker via the LoudSPK path, volume through `Lineout Volume`; works after reboot |
 | Charger | Richtek RT9470D via the `rt9471` driver: status, current/voltage limits, BC1.2, OTG boost |
 | Battery | `mt6358_battery` (v1): voltage + OCV capacity estimate, status from the charger |
@@ -36,7 +36,7 @@ on a UFS partition, systemd.
 | Top (earpiece) speaker | only the bottom speaker plays; the second amp path (RCV or a digital amp on I2S3) is not wired up yet |
 | Amp I2C control | the speaker amp (RT5512/FS1559 at `i2c6 0x5c`) and gate IC (`0x11`) do not ACK; audio works in analog passthrough |
 | Battery gauge | no FGADC driver: no current, no coulomb counter; `voltage_now` currently reports `-110` (open regression) |
-| Wi-Fi / Bluetooth | on-SoC CONNSYS, vendor 5.10 driver only |
+| Wi-Fi / Bluetooth | on-SoC CONNSYS, vendor 5.10 driver only; the vendor modules are blacklisted on this device (unloading `wlan_gen4m` crashes the kernel) |
 | Modem | vendor stack only |
 | Camera | no driver |
 | cpuidle / suspend | not implemented, not tested |
@@ -62,28 +62,30 @@ The DTS comments are in English so the reasoning is clear to other readers.
 ## Display
 
 The panel is an Ilitek ILI7835 1080x2400 AMOLED in MIPI DSI command mode.
-U-Boot leaves the MMSYS pipeline, the DSI controller and the D-PHY
-initialized; the kernel only has to push frames.
+The kernel drives it through the mainline MediaTek DRM stack; the panel
+driver (`drivers/gpu/drm/panel/panel-ilitek-ili7835.c`) is part of this
+tree.
 
-* **Scanout buffer**: `shared-dma-pool` node `display-fb@feabe000` in
-  `reserved-memory` (the middle of the three bootloader framebuffers),
-  referenced by `memory-region` in the `display@14000000` node.  The DRM
-  buffer therefore lands exactly at `0xfeabe000`, the address the bootloader
-  programs into OVL0.
-* **Driver**: out-of-tree `x676b_drm`
-  (`/workdir/git/heliog99/display/x676b-drm`), built against this tree and
-  loaded from `modules-load.d`.  It registers `drm_simple_display_pipe` +
-  `drm_gem_dma` + fbdev; `simple-framebuffer` is disabled in the DTB.
-* **Visible layer**: OVL0 **layer 1**.  `L1_CON` must be `0x20ff` (per-pixel
-  alpha off): fbcon writes XRGB with alpha = 0, so an alpha-enabled layer is
-  fully transparent and the screen stays black.
-* **Frame trigger**: reprogram OVL0 -> RDMA0 -> DITHER0 -> DSI0 and then send
-  DCS `0x2C` with `CMDQ_SIZE=0x8001` plus a `DSI_START` bit-0 toggle, from a
-  single periodic thread every 16 ms.  Do not trigger from atomic commits and
-  do not write `DSI_INTSTA`.
-* **`DSI_CON` bit 0 is the DSI reset**: it must be deasserted after any reset
-  pulse.  If it stays set the engine is held in reset: no frames and no DCS
-  commands reach the panel (looks like a dead panel until a power cycle).
+* **Pipeline**: `mediatek-drm` with the MT6789 components —
+  OVL0, RDMA0 (memory mode), DITHER0, DSI0 — plus `mtk-mmsys`,
+  `mtk-mutex`, the MT6789 D-PHY and `clk-mt6789-mm`.  Routing lives in
+  `drivers/soc/mediatek/mt6789-mmsys.h`.
+* **Command-mode tick**: the panel has no hardware vblank, so
+  `mtk_crtc_cmd_mode_work()` converts the fbcon XRGB8888 buffer to
+  packed RGB888 (NEON), hands it to RDMA in memory mode and sends DCS
+  `0x2C` once per period (`cmd_period_ms`, 33 ms by default).
+* **Buffers**: MTK GEM buffers and the conversion buffer are cacheable
+  non-coherent DMA memory (`dma_alloc_noncoherent()`), so the CPU
+  conversion costs ~5.7 ms per frame (~14% of one core at 30 fps).
+  Write-combined memory made the fb reads 8x slower.
+* **Panel driver**: ILI7835 init sequence, reset/bias GPIOs (85/64),
+  DCS `0x11`/`0x29` and `0x51` brightness via the backlight device.
+* **Not used**: the direct OVL to RDMA path (`cmd_memory_mode=0`) does
+  not survive repeated software triggers without GCE/TE, so frames go
+  through RDMA memory mode.
+
+See `Documentation/x676b.rst` for the driver/parameter details and the
+known limitations (60 Hz does not fit the 1006 Mbit/s D-PHY link yet).
 
 ## SD card (MSDC1)
 
@@ -117,6 +119,10 @@ Important configuration choices for this device:
 
 ## Changes over upstream
 
+* **Display**: MT6789 MMSYS routing and mutex tables, DSI command-mode
+  quirks (`reg_cmdq_off=0xd00`, PSCTRL, CMD_DONE polling), the ILI7835
+  panel driver, RDMA memory-mode support, the command-mode frame tick and
+  cacheable GEM buffers.
 * **Sound**: MT6789 AFE driver (`sound/soc/mediatek/mt6789/`), machine driver
   `mt6789-mt6366`, MT6358 codec integration, RT5512 amplifier driver
   (from the 2022-10-13 LKML patch), 18 AFE pin states, bit-banding memif
@@ -138,6 +144,8 @@ Important configuration choices for this device:
 
 ## Documentation
 
+* `Documentation/x676b.rst` — X676B kernel support: device tree, display
+  drivers, module parameters, known limitations.
 * `Documentation/sound/mediatek/mt6789-x676b-audio.md` — audio bring-up
   notes and the AFE/codec/amp wiring.
 * `Documentation/sound/mediatek/mt6789-x676b-refs/` — RT5512 LKML patch and
