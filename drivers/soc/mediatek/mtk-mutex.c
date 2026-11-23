@@ -925,8 +925,6 @@ int mtk_mutex_prepare(struct mtk_mutex *mutex)
 						 mutex[mutex->id]);
 	int ret;
 
-	pr_info("DBG mutex_prepare id=%d clear=%d regs=%px\n", mutex->id,
-		mtx->data->clear_mods, mtx->regs);
 	ret = clk_prepare_enable(mtx->clk);
 	if (ret)
 		return ret;
@@ -945,11 +943,6 @@ int mtk_mutex_prepare(struct mtk_mutex *mutex)
 			       DISP_REG_MUTEX_MOD(mtx, mtx->data->mutex_mod1_reg, mutex->id));
 		writel(0, mtx->regs +
 		       DISP_REG_MUTEX_SOF(mtx->data->mutex_sof_reg, mutex->id));
-		pr_info("DBG after clear mod=%x sof=%x\n",
-			readl_relaxed(mtx->regs + DISP_REG_MUTEX_MOD(mtx,
-				      mtx->data->mutex_mod_reg, mutex->id)),
-			readl_relaxed(mtx->regs + DISP_REG_MUTEX_SOF(
-				      mtx->data->mutex_sof_reg, mutex->id)));
 	}
 
 	return 0;
@@ -1057,8 +1050,6 @@ void mtk_mutex_remove_comp(struct mtk_mutex *mutex,
 						  mutex->id));
 		break;
 	default:
-		pr_info("DBG mutex_add id=%d comp=%d mod=%d\n", mutex->id, id,
-			mtx->data->mutex_mod[id]);
 		offset = DISP_REG_MUTEX_MOD(mtx, mtx->data->mutex_mod[id], mutex->id);
 		mod_id = mtx->data->mutex_mod[id] % 32;
 		reg = readl_relaxed(mtx->regs + offset);
@@ -1076,12 +1067,6 @@ void mtk_mutex_enable(struct mtk_mutex *mutex)
 
 	WARN_ON(&mtx->mutex[mutex->id] != mutex);
 
-	{
-		static int dbg_cnt;
-		if (dbg_cnt < 3)
-			pr_info("DBG mutex_enable id=%d\n", mutex->id);
-		dbg_cnt++;
-	}
 	writel(1, mtx->regs + DISP_REG_MUTEX_EN(mutex->id));
 }
 EXPORT_SYMBOL_GPL(mtk_mutex_enable);
@@ -1122,12 +1107,6 @@ void mtk_mutex_acquire(struct mtk_mutex *mutex)
 						 mutex[mutex->id]);
 	u32 tmp;
 
-	{
-		static int dbg_cnt;
-		if (dbg_cnt < 3)
-			pr_info("DBG mutex_enable id=%d\n", mutex->id);
-		dbg_cnt++;
-	}
 	writel(1, mtx->regs + DISP_REG_MUTEX_EN(mutex->id));
 	writel(1, mtx->regs + DISP_REG_MUTEX(mutex->id));
 	if (readl_poll_timeout_atomic(mtx->regs + DISP_REG_MUTEX(mutex->id),

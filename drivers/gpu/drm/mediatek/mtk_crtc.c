@@ -808,7 +808,6 @@ void mtk_crtc_async_update(struct drm_crtc *crtc, struct drm_plane *plane,
 static void mtk_crtc_atomic_enable(struct drm_crtc *crtc,
 				   struct drm_atomic_state *state)
 {
-	pr_info("DBG atomic_enable\n");
 	struct mtk_crtc *mtk_crtc = to_mtk_crtc(crtc);
 	struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[0];
 	struct drm_device *dev = mtk_crtc->base.dev;
@@ -825,7 +824,6 @@ static void mtk_crtc_atomic_enable(struct drm_crtc *crtc,
 	mtk_crtc_update_output(crtc, state);
 
 	ret = mtk_crtc_ddp_hw_init(mtk_crtc);
-	pr_info("DBG hw_init ret=%d\n", ret);
 	if (ret) {
 		mtk_ddp_comp_power_off(comp);
 		return;
