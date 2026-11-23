@@ -205,7 +205,8 @@ void mtk_rdma_set_memory(struct device *dev, dma_addr_t addr,
 	writel(mem_con, rdma->regs + DISP_RDMA_MEM_CON);
 	writel(pitch, rdma->regs + DISP_RDMA_MEM_SRC_PITCH);
 	writel(lower_32_bits(addr), rdma->regs + DISP_RDMA_MEM_START_ADDR);
-	writel(RDMA_ENGINE_EN | RDMA_MODE_MEMORY,
+	/* Bit 8 is required on MT6789 in addition to MODE_MEMORY. */
+	writel(RDMA_ENGINE_EN | RDMA_MODE_MEMORY | BIT(8),
 	       rdma->regs + DISP_REG_RDMA_GLOBAL_CON);
 }
 

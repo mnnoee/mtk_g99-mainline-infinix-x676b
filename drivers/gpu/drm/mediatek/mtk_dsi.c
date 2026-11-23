@@ -197,6 +197,7 @@ struct mtk_dsi_driver_data {
 	bool poll_cmd_done;
 	bool ext_te;
 	bool no_vm_cmd;
+	bool psctrl_cm_extra;
 };
 
 struct mtk_dsi {
@@ -734,6 +735,14 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	if (!dsi->driver_data->no_vm_cmd)
 		mtk_dsi_set_vm_cmd(dsi);
 	mtk_dsi_config_vdo_timing(dsi);
+
+	/* Apply after vdo timing, it rewrites PSCTRL for video mode. */
+	if (dsi->driver_data->psctrl_cm_extra) {
+		u32 ps = readl(dsi->regs + DSI_PSCTRL);
+
+		writel((ps & 0xffff) | 0x2c030000, dsi->regs + DSI_PSCTRL);
+	}
+
 	mtk_dsi_set_interrupt_enable(dsi);
 
 	/*
@@ -939,6 +948,14 @@ void mtk_dsi_ddp_trigger(struct device *dev)
 	u32 start;
 
 	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO)
+		return;
+
+	/*
+	 * Never start a new frame while the previous transfer is still in
+	 * flight: overlapping triggers wedge the DSI FSM in BUSY and no
+	 * software reset can recover it.
+	 */
+	if (readl(dsi->regs + DSI_INTSTA) & DSI_BUSY)
 		return;
 
 	/*
@@ -1343,6 +1360,7 @@ static const struct mtk_dsi_driver_data mt6789_dsi_driver_data = {
 	.cmdq_long_packet_ctl = true,
 	.poll_cmd_done = true,
 	.no_vm_cmd = true,
+	.psctrl_cm_extra = true,
 };
 
 static const struct mtk_dsi_driver_data mt8173_dsi_driver_data = {
