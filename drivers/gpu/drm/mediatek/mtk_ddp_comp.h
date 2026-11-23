@@ -58,6 +58,7 @@ struct mtk_ddp_comp_funcs {
 		       unsigned int bpc, struct cmdq_pkt *cmdq_pkt);
 	void (*start)(struct device *dev);
 	void (*stop)(struct device *dev);
+	void (*trigger)(struct device *dev);
 	void (*register_vblank_cb)(struct device *dev,
 				   void (*vblank_cb)(void *),
 				   void *vblank_cb_data);
@@ -159,6 +160,12 @@ static inline void mtk_ddp_comp_stop(struct mtk_ddp_comp *comp)
 {
 	if (comp->funcs && comp->funcs->stop)
 		comp->funcs->stop(comp->dev);
+}
+
+static inline void mtk_ddp_comp_trigger(struct mtk_ddp_comp *comp)
+{
+	if (comp->funcs && comp->funcs->trigger)
+		comp->funcs->trigger(comp->dev);
 }
 
 static inline void mtk_ddp_comp_register_vblank_cb(struct mtk_ddp_comp *comp,

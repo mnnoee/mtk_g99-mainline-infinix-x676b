@@ -72,6 +72,9 @@ struct mtk_crtc {
 	bool				config_updating;
 	/* lock for config_updating to cmd buffer */
 	spinlock_t			config_lock;
+
+	/* command-mode panels need a frame trigger + fake vblank */
+	struct delayed_work		cmd_mode_work;
 };
 
 struct mtk_crtc_state {
@@ -126,11 +129,36 @@ static void mtk_drm_finish_page_flip(struct mtk_crtc *mtk_crtc)
 	spin_unlock_irqrestore(&mtk_crtc->config_lock, flags);
 }
 
+static void mtk_crtc_ddp_irq(void *data);
+
+static void mtk_crtc_cmd_mode_work(struct work_struct *work)
+{
+	struct mtk_crtc *mtk_crtc = container_of(work, struct mtk_crtc,
+						 cmd_mode_work.work);
+
+	if (!mtk_crtc->enabled)
+		return;
+
+	/*
+	 * This is the vblank callback the hardware would normally call: it
+	 * applies pending config (non shadow-register SoCs) and completes
+	 * page flips. Command mode panels get no hardware vblank, so we run
+	 * it from the trigger tick.
+	 */
+	mtk_crtc_ddp_irq(&mtk_crtc->base);
+
+	/* Then ask the DSI for one frame. */
+	mtk_ddp_comp_trigger(mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1]);
+
+	schedule_delayed_work(&mtk_crtc->cmd_mode_work, msecs_to_jiffies(16));
+}
+
 static void mtk_crtc_destroy(struct drm_crtc *crtc)
 {
 	struct mtk_crtc *mtk_crtc = to_mtk_crtc(crtc);
 	int i;
 
+	cancel_delayed_work_sync(&mtk_crtc->cmd_mode_work);
 	mtk_mutex_put(mtk_crtc->mutex);
 #if IS_REACHABLE(CONFIG_MTK_CMDQ)
 	if (mtk_crtc->cmdq_client.chan) {
@@ -800,6 +828,7 @@ static void mtk_crtc_atomic_enable(struct drm_crtc *crtc,
 
 	drm_crtc_vblank_on(crtc);
 	mtk_crtc->enabled = true;
+	schedule_delayed_work(&mtk_crtc->cmd_mode_work, msecs_to_jiffies(16));
 }
 
 static void mtk_crtc_atomic_disable(struct drm_crtc *crtc,
@@ -813,6 +842,8 @@ static void mtk_crtc_atomic_disable(struct drm_crtc *crtc,
 	drm_dbg_driver(dev, "%s %d\n", __func__, crtc->base.id);
 	if (!mtk_crtc->enabled)
 		return;
+
+	cancel_delayed_work_sync(&mtk_crtc->cmd_mode_work);
 
 	/* Set all pending plane state to disabled */
 	for (i = 0; i < mtk_crtc->layer_nr; i++) {
@@ -1055,6 +1086,7 @@ int mtk_crtc_create(struct drm_device *drm_dev, const unsigned int *path,
 
 	mtk_crtc->mmsys_dev = priv->mmsys_dev;
 	mtk_crtc->ddp_comp_nr = path_len;
+	INIT_DELAYED_WORK(&mtk_crtc->cmd_mode_work, mtk_crtc_cmd_mode_work);
 	mtk_crtc->ddp_comp = devm_kcalloc(dev,
 					  mtk_crtc->ddp_comp_nr + (conn_routes ? 1 : 0),
 					  sizeof(*mtk_crtc->ddp_comp),

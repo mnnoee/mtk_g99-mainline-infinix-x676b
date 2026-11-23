@@ -910,6 +910,25 @@ void mtk_dsi_ddp_stop(struct device *dev)
 	mtk_dsi_poweroff(dsi);
 }
 
+/*
+ * Command mode panels need one DCS 0x2C (write_memory_start) per frame.
+ * Mainline has no frame-trigger loop, so the CRTC pokes us every vblank.
+ * The raw CMDQ word matches what the vendor driver uses in its
+ * "frame trigger mode": data_id 0x2c, data type 0x39, config 0x09.
+ */
+void mtk_dsi_ddp_trigger(struct device *dev)
+{
+	struct mtk_dsi *dsi = dev_get_drvdata(dev);
+	u32 start;
+
+	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO)
+		return;
+
+	start = readl(dsi->regs + DSI_START);
+	writel(start & ~1, dsi->regs + DSI_START);
+	writel(start | 1, dsi->regs + DSI_START);
+}
+
 static int mtk_dsi_encoder_init(struct drm_device *drm, struct mtk_dsi *dsi)
 {
 	int ret;
