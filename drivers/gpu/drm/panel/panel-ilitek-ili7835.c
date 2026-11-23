@@ -242,7 +242,7 @@ static int ili7835_probe(struct mipi_dsi_device *dsi)
 			  MIPI_DSI_CLOCK_NON_CONTINUOUS |
 			  MIPI_DSI_MODE_LPM;
 
-	ctx->panel.prepare_prev_first = true;
+	ctx->panel.prepare_prev_first = false;
 
 	ctx->panel.backlight = ili7835_create_backlight(ctx);
 	if (IS_ERR(ctx->panel.backlight))

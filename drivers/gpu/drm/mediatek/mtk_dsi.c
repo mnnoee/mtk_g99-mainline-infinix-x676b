@@ -194,6 +194,9 @@ struct mtk_dsi_driver_data {
 	bool has_size_ctl;
 	bool cmdq_long_packet_ctl;
 	bool support_per_frame_lp;
+	bool dsi_en_bit0;
+	bool no_reset_engine;
+	bool poll_cmd_done;
 };
 
 struct mtk_dsi {
@@ -290,18 +293,34 @@ static void mtk_dsi_phy_timconfig(struct mtk_dsi *dsi)
 	writel(timcon3, dsi->regs + DSI_PHY_TIMECON3);
 }
 
+static void mtk_dsi_lane_ready(struct mtk_dsi *dsi);
+
+static u32 mtk_dsi_en_bit(struct mtk_dsi *dsi)
+{
+	/* MT6789 keeps DSI_EN in bit 0, every other SoC uses bit 1. */
+	return dsi->driver_data->dsi_en_bit0 ? BIT(0) : DSI_EN;
+}
+
 static void mtk_dsi_enable(struct mtk_dsi *dsi)
 {
-	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_EN, DSI_EN);
+	u32 en = mtk_dsi_en_bit(dsi);
+
+	mtk_dsi_mask(dsi, DSI_CON_CTRL, en, en);
 }
 
 static void mtk_dsi_disable(struct mtk_dsi *dsi)
 {
-	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_EN, 0);
+	mtk_dsi_mask(dsi, DSI_CON_CTRL, mtk_dsi_en_bit(dsi), 0);
 }
 
 static void mtk_dsi_reset_engine(struct mtk_dsi *dsi)
 {
+	/* On MT6789 DSI_RESET shares the register with DSI_EN, toggling it
+	 * would disable the controller right after enabling it.
+	 */
+	if (dsi->driver_data->no_reset_engine)
+		return;
+
 	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_RESET, DSI_RESET);
 	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_RESET, 0);
 }
@@ -726,6 +745,13 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	mtk_dsi_config_vdo_timing(dsi);
 	mtk_dsi_set_interrupt_enable(dsi);
 
+	/*
+	 * Panels send their init sequence from drm_panel_prepare(), which runs
+	 * between the DSI pre_enable (poweron) and enable (start). The lanes
+	 * must already be up at that point or the DCS transfers never finish.
+	 */
+	mtk_dsi_lane_ready(dsi);
+
 	return 0;
 err_disable_engine_clk:
 	clk_disable_unprepare(dsi->engine_clk);
@@ -1125,10 +1151,23 @@ static void mtk_dsi_cmdq(struct mtk_dsi *dsi, const struct mipi_dsi_msg *msg)
 static ssize_t mtk_dsi_host_send_cmd(struct mtk_dsi *dsi,
 				     const struct mipi_dsi_msg *msg, u8 flag)
 {
+	u32 val;
+
 	mtk_dsi_wait_for_idle(dsi);
 	mtk_dsi_irq_data_clear(dsi, flag);
 	mtk_dsi_cmdq(dsi, msg);
 	mtk_dsi_start(dsi);
+
+	/*
+	 * MT6789 does not raise CMD_DONE for command mode transfers; the
+	 * only reliable completion signal is DSI_BUSY dropping in INTSTA.
+	 */
+	if (dsi->driver_data->poll_cmd_done) {
+		if (readl_poll_timeout(dsi->regs + DSI_INTSTA, val,
+				       !(val & DSI_BUSY), 10, 2000000))
+			return -ETIME;
+		return 0;
+	}
 
 	if (!mtk_dsi_wait_for_irq_done(dsi, flag, 2000))
 		return -ETIME;
@@ -1291,6 +1330,10 @@ static const struct mtk_dsi_driver_data mt6789_dsi_driver_data = {
 	.has_shadow_ctl = false,
 	.has_size_ctl = true,
 	.support_per_frame_lp = true,
+	.dsi_en_bit0 = true,
+	.no_reset_engine = true,
+	.cmdq_long_packet_ctl = true,
+	.poll_cmd_done = true,
 };
 
 static const struct mtk_dsi_driver_data mt8173_dsi_driver_data = {
