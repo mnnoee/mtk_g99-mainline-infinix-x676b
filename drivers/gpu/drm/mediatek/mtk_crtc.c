@@ -185,10 +185,37 @@ static void mtk_crtc_cmd_mode_convert(struct mtk_crtc *mtk_crtc,
 	}
 }
 
+/*
+ * The command-mode tick runs outside any atomic commit, so it must not
+ * dereference plane->state directly: fbcon commits replace the state and
+ * free the old one concurrently (KASAN: slab-use-after-free in
+ * mtk_crtc_cmd_mode_work). Read the state under the plane lock and keep a
+ * reference to the framebuffer for as long as it is used.
+ */
+static struct drm_framebuffer *
+mtk_crtc_cmd_mode_get_fb(struct mtk_crtc *mtk_crtc, dma_addr_t *addr)
+{
+	struct drm_plane *plane = &mtk_crtc->planes[0];
+	struct drm_framebuffer *fb = NULL;
+
+	drm_modeset_lock(&plane->mutex, NULL);
+	if (plane->state && plane->state->fb) {
+		fb = plane->state->fb;
+		*addr = drm_fb_dma_get_gem_addr(fb, plane->state, 0);
+		drm_framebuffer_get(fb);
+	}
+	drm_modeset_unlock(&plane->mutex);
+
+	return fb;
+}
+
 static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 {
 	struct mtk_crtc *mtk_crtc = container_of(work, struct mtk_crtc,
 						 cmd_mode_work.work);
+	struct drm_framebuffer *fb;
+	dma_addr_t addr;
+	bool need_config = false;
 	int i;
 
 	if (!mtk_crtc->enabled)
@@ -198,84 +225,68 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	if (mtk_crtc->config_updating)
 		goto resched;
 
+	fb = mtk_crtc_cmd_mode_get_fb(mtk_crtc, &addr);
+
 	/*
 	 * This is the vblank callback the hardware would normally call: it
 	 * applies pending config (non shadow-register SoCs) and completes
 	 * page flips. Command mode panels get no hardware vblank, so we run
 	 * it from the trigger tick.
 	 */
-	{
+	if (cmd_ddp_irq && fb && addr != mtk_crtc->cmd_fb_addr) {
 		struct drm_plane *plane = &mtk_crtc->planes[0];
-		struct drm_plane_state *ps = plane->state;
-		bool need_config = false;
 
-		if (cmd_ddp_irq && ps && ps->fb) {
-			dma_addr_t addr = drm_fb_dma_get_gem_addr(ps->fb, ps, 0);
+		drm_modeset_lock(&plane->mutex, NULL);
+		if (plane->state)
+			to_mtk_plane_state(plane->state)->pending.config = true;
+		drm_modeset_unlock(&plane->mutex);
 
-			if (addr != mtk_crtc->cmd_fb_addr) {
-				struct mtk_plane_state *pstate =
-					to_mtk_plane_state(plane->state);
-
-				pstate->pending.config = true;
-				mtk_crtc->pending_planes = true;
-				mtk_crtc->cmd_fb_addr = addr;
-				need_config = true;
-			}
-		}
-
-		/*
-		 * Apply pending CRTC/OVL config only when the scanout buffer
-		 * changed: running ddp_config while frames are flowing breaks
-		 * the transfer. Page flips are completed every tick.
-		 */
-		if (need_config)
-			mtk_crtc_ddp_irq(&mtk_crtc->base);
-		else
-			mtk_drm_finish_page_flip(mtk_crtc);
+		mtk_crtc->pending_planes = true;
+		mtk_crtc->cmd_fb_addr = addr;
+		need_config = true;
 	}
 
-	if (!cmd_memory_mode) {
-		struct drm_plane *plane = &mtk_crtc->planes[0];
-		struct drm_plane_state *ps = plane->state;
+	/*
+	 * Apply pending CRTC/OVL config only when the scanout buffer
+	 * changed: running ddp_config while frames are flowing breaks
+	 * the transfer. Page flips are completed every tick.
+	 */
+	if (need_config)
+		mtk_crtc_ddp_irq(&mtk_crtc->base);
+	else
+		mtk_drm_finish_page_flip(mtk_crtc);
 
-		if (ps && ps->fb) {
-			dma_addr_t addr = drm_fb_dma_get_gem_addr(ps->fb, ps, 0);
+	if (!cmd_memory_mode && fb && addr != mtk_crtc->cmd_fb_addr) {
+		for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
+			struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
 
-			if (addr != mtk_crtc->cmd_fb_addr) {
-				for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
-					struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
-
-					if (comp->funcs && comp->funcs->scanout_config) {
-						comp->funcs->scanout_config(comp->dev,
-							addr, ps->fb->pitches[0],
-							ps->fb->width, ps->fb->height);
-						break;
-					}
-				}
-				mtk_crtc->cmd_fb_addr = addr;
+			if (comp->funcs && comp->funcs->scanout_config) {
+				comp->funcs->scanout_config(comp->dev, addr,
+							    fb->pitches[0],
+							    fb->width, fb->height);
+				break;
 			}
 		}
+		mtk_crtc->cmd_fb_addr = addr;
 	}
 
-	if (cmd_memory_mode) {
-		struct drm_plane *plane = &mtk_crtc->planes[0];
-		struct drm_plane_state *ps = plane->state;
+	if (cmd_memory_mode && fb && mtk_crtc->cmd_conv_buf) {
+		mtk_crtc_cmd_mode_convert(mtk_crtc, fb);
+		for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
+			struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
 
-		if (ps && ps->fb && mtk_crtc->cmd_conv_buf) {
-			mtk_crtc_cmd_mode_convert(mtk_crtc, ps->fb);
-			for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
-				struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
-
-				if (comp->funcs && comp->funcs->mem_config) {
-					comp->funcs->mem_config(comp->dev,
-						mtk_crtc->cmd_conv_dma,
-						ps->fb->width * 3,
-						DRM_FORMAT_RGB888);
-					break;
-				}
+			if (comp->funcs && comp->funcs->mem_config) {
+				comp->funcs->mem_config(comp->dev,
+							mtk_crtc->cmd_conv_dma,
+							fb->width * 3,
+							DRM_FORMAT_RGB888);
+				break;
 			}
 		}
 	}
+
+	if (fb)
+		drm_framebuffer_put(fb);
 
 	/* Re-arm RDMA before each frame in the direct path. */
 	if (!cmd_memory_mode && mtk_crtc->ddp_comp_nr > 1)
