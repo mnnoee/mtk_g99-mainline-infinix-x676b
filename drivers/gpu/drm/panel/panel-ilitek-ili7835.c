@@ -120,16 +120,21 @@ static void ili7835_init_sequence(struct mipi_dsi_multi_context *ctx)
 	mipi_dsi_msleep(ctx, 20);
 }
 
+static bool skip_init;
+module_param(skip_init, bool, 0644);
+MODULE_PARM_DESC(skip_init, "Keep the panel initialised by the bootloader (bring-up only)");
+
 static int ili7835_prepare(struct drm_panel *panel)
 {
 	struct ili7835_panel *ctx = to_ili7835_panel(panel);
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 
-	ili7835_reset(ctx);
-
-	ili7835_init_sequence(&dsi_ctx);
-	if (dsi_ctx.accum_err)
-		return dsi_ctx.accum_err;
+	if (!skip_init) {
+		ili7835_reset(ctx);
+		ili7835_init_sequence(&dsi_ctx);
+		if (dsi_ctx.accum_err)
+			return dsi_ctx.accum_err;
+	}
 
 	ctx->prepared = true;
 
