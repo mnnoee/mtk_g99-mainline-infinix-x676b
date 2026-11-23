@@ -20,6 +20,7 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_of.h>
 #include <drm/drm_probe_helper.h>
@@ -633,10 +634,32 @@ static struct drm_gem_object *mtk_gem_prime_import(struct drm_device *dev,
 	return drm_gem_prime_import_dev(dev, dma_buf, private->dma_dev);
 }
 
+/*
+ * MT6789: the CPU touches the scanout buffer in the command-mode tick
+ * (XRGB8888 -> RGB888 conversion). Write-combined DMA GEM memory makes
+ * those reads pathologically slow (0.18 GB/s), so ask the GEM DMA helper
+ * for cacheable buffers; the display path only uses them through the CPU
+ * and dma_sync_single_for_device().
+ */
+static struct drm_gem_object *
+mtk_drm_gem_create_object(struct drm_device *drm, size_t size)
+{
+	struct drm_gem_dma_object *obj;
+
+	obj = kzalloc(sizeof(*obj), GFP_KERNEL);
+	if (!obj)
+		return ERR_PTR(-ENOMEM);
+
+	obj->map_noncoherent = true;
+
+	return &obj->base;
+}
+
 static const struct drm_driver mtk_drm_driver = {
 	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
 
 	.dumb_create = mtk_gem_dumb_create,
+	.gem_create_object = mtk_drm_gem_create_object,
 	DRM_FBDEV_DMA_DRIVER_OPS,
 
 	.gem_prime_import = mtk_gem_prime_import,

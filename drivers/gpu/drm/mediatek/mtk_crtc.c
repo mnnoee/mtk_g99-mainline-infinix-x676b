@@ -14,6 +14,7 @@
 #include <linux/soc/mediatek/mtk-mutex.h>
 
 #include <asm/barrier.h>
+#include <asm/fpsimd.h>
 #include <asm/neon.h>
 #include <asm/simd.h>
 
@@ -169,9 +170,15 @@ static void mtk_crtc_cmd_mode_convert_neon(u8 *dst, const u8 *src,
 					   unsigned int height,
 					   unsigned int src_pitch)
 {
+	struct user_fpsimd_state fpsimd_state;
 	unsigned int x, y;
 
-	kernel_neon_begin(NULL);
+	/*
+	 * The workqueue is preemptible, so the FP/SIMD state must be backed
+	 * by a caller-provided buffer: with NULL the kernel would save the
+	 * state to a NULL pointer when this task is preempted.
+	 */
+	kernel_neon_begin(&fpsimd_state);
 	for (y = 0; y < height; y++) {
 		const u8 *s = src + (size_t)y * src_pitch;
 		u8 *d = dst + (size_t)y * width * 3;
@@ -192,7 +199,7 @@ static void mtk_crtc_cmd_mode_convert_neon(u8 *dst, const u8 *src,
 			d += 3;
 		}
 	}
-	kernel_neon_end(NULL);
+	kernel_neon_end(&fpsimd_state);
 }
 
 static void mtk_crtc_cmd_mode_convert(struct mtk_crtc *mtk_crtc,
@@ -322,6 +329,9 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 
 	if (cmd_memory_mode && fb && mtk_crtc->cmd_conv_buf) {
 		mtk_crtc_cmd_mode_convert(mtk_crtc, fb);
+		dma_sync_single_for_device(mtk_crtc->base.dev->dev,
+					   mtk_crtc->cmd_conv_dma,
+					   1080 * 2400 * 3, DMA_TO_DEVICE);
 		for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
 			struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
 
@@ -367,9 +377,10 @@ static void mtk_crtc_destroy(struct drm_crtc *crtc)
 
 	cancel_delayed_work_sync(&mtk_crtc->cmd_mode_work);
 	if (mtk_crtc->cmd_conv_buf)
-		dma_free_coherent(crtc->dev->dev, 1080 * 2400 * 3,
-				  mtk_crtc->cmd_conv_buf,
-				  mtk_crtc->cmd_conv_dma);
+		dma_free_noncoherent(crtc->dev->dev, 1080 * 2400 * 3,
+				     mtk_crtc->cmd_conv_buf,
+				     mtk_crtc->cmd_conv_dma,
+				     DMA_TO_DEVICE);
 	mtk_mutex_put(mtk_crtc->mutex);
 #if IS_REACHABLE(CONFIG_MTK_CMDQ)
 	if (mtk_crtc->cmdq_client.chan) {
@@ -1304,9 +1315,17 @@ int mtk_crtc_create(struct drm_device *drm_dev, const unsigned int *path,
 	mtk_crtc->ddp_comp_nr = path_len;
 
 	/* Packed RGB888 frame for the command-mode RDMA memory path. */
-	mtk_crtc->cmd_conv_buf = dma_alloc_coherent(dev, 1080 * 2400 * 3,
-						    &mtk_crtc->cmd_conv_dma,
-						    GFP_KERNEL);
+	/*
+	 * Use cacheable memory and sync it explicitly before each frame.
+	 * dma_alloc_coherent() gives non-cacheable memory on this SoC, and
+	 * writing the 7.8 MiB frame into it costs most of a CPU core at
+	 * 30 fps; the cacheable buffer makes the conversion cheap and the
+	 * one dma_sync per frame cleans the lines for the RDMA engine.
+	 */
+	mtk_crtc->cmd_conv_buf = dma_alloc_noncoherent(dev, 1080 * 2400 * 3,
+						      &mtk_crtc->cmd_conv_dma,
+						      DMA_TO_DEVICE,
+						      GFP_KERNEL);
 	INIT_DELAYED_WORK(&mtk_crtc->cmd_mode_work, mtk_crtc_cmd_mode_work);
 	mtk_crtc->ddp_comp = devm_kcalloc(dev,
 					  mtk_crtc->ddp_comp_nr + (conn_routes ? 1 : 0),

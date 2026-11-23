@@ -27,6 +27,10 @@ static void mtk_gem_free_object(struct drm_gem_object *obj)
 
 	if (dma_obj->sgt)
 		drm_prime_gem_destroy(obj, dma_obj->sgt);
+	else if (dma_obj->map_noncoherent)
+		dma_free_noncoherent(priv->dma_dev, dma_obj->base.size,
+				     dma_obj->vaddr, dma_obj->dma_addr,
+				     DMA_TO_DEVICE);
 	else
 		dma_free_wc(priv->dma_dev, dma_obj->base.size,
 			    dma_obj->vaddr, dma_obj->dma_addr);
@@ -89,6 +93,13 @@ static struct drm_gem_dma_object *mtk_gem_init(struct drm_device *dev,
 	if (!dma_obj)
 		return ERR_PTR(-ENOMEM);
 
+	/*
+	 * MT6789 command mode: fbcon and the RGB conversion read the
+	 * scanout buffer on the CPU. Write-combined memory makes reads
+	 * extremely slow (~0.16 GB/s), so use cacheable memory and sync
+	 * explicitly where the buffer is handed to the display engine.
+	 */
+	dma_obj->map_noncoherent = true;
 	dma_obj->base.funcs = &mtk_gem_object_funcs;
 
 	if (private) {
@@ -119,9 +130,15 @@ static struct drm_gem_dma_object *mtk_gem_create(struct drm_device *dev, size_t 
 
 	obj = &dma_obj->base;
 
-	dma_obj->vaddr = dma_alloc_wc(priv->dma_dev, obj->size,
-				      &dma_obj->dma_addr,
-				      GFP_KERNEL | __GFP_NOWARN);
+	if (dma_obj->map_noncoherent)
+		dma_obj->vaddr = dma_alloc_noncoherent(priv->dma_dev, obj->size,
+						       &dma_obj->dma_addr,
+						       DMA_TO_DEVICE,
+						       GFP_KERNEL | __GFP_NOWARN);
+	else
+		dma_obj->vaddr = dma_alloc_wc(priv->dma_dev, obj->size,
+					      &dma_obj->dma_addr,
+					      GFP_KERNEL | __GFP_NOWARN);
 	if (!dma_obj->vaddr) {
 		DRM_ERROR("failed to allocate %zx byte dma buffer", obj->size);
 		ret = -ENOMEM;
@@ -198,11 +215,16 @@ static int mtk_gem_object_mmap(struct drm_gem_object *obj,
 	 */
 	vm_flags_mod(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP, VM_PFNMAP);
 
-	vma->vm_page_prot = pgprot_writecombine(vm_get_page_prot(vma->vm_flags));
-	vma->vm_page_prot = pgprot_decrypted(vma->vm_page_prot);
-
-	ret = dma_mmap_wc(priv->dma_dev, vma, dma_obj->vaddr,
-			  dma_obj->dma_addr, obj->size);
+	if (dma_obj->map_noncoherent) {
+		vma->vm_page_prot = pgprot_decrypted(vm_get_page_prot(vma->vm_flags));
+		ret = dma_mmap_attrs(priv->dma_dev, vma, dma_obj->vaddr,
+				     dma_obj->dma_addr, obj->size, 0);
+	} else {
+		vma->vm_page_prot = pgprot_writecombine(vm_get_page_prot(vma->vm_flags));
+		vma->vm_page_prot = pgprot_decrypted(vma->vm_page_prot);
+		ret = dma_mmap_wc(priv->dma_dev, vma, dma_obj->vaddr,
+				  dma_obj->dma_addr, obj->size);
+	}
 	if (ret)
 		drm_gem_vm_close(vma);
 
