@@ -371,9 +371,11 @@ struct mtk_mutex_data {
 	const u16 mutex_mod1_reg;
 	const u16 mutex_sof_reg;
 	const bool no_clk;
+	const bool clear_mods;
 };
 
 struct mtk_mutex_ctx {
+	u32				mod_shadow[8];
 	struct device			*dev;
 	struct clk			*clk;
 	void __iomem			*regs;
@@ -717,8 +719,10 @@ static const u16 mt8167_mutex_sof[DDP_MUTEX_SOF_MAX] = {
 };
 
 static const u16 mt6789_mutex_sof[DDP_MUTEX_SOF_MAX] = {
+	/* Software trigger (single shot): the CRTC pokes MUTEX_EN once per
+	 * frame, like the vendor driver does for command mode panels.
+	 */
 	[MUTEX_SOF_SINGLE_MODE] = MUTEX_SOF_SINGLE_MODE,
-	[MUTEX_SOF_DSI0] = MUTEX_SOF_DSI0 | MT8183_MUTEX_EOF_DSI0,
 };
 
 /* Add EOF setting so overlay hardware can receive frame done irq */
@@ -812,6 +816,7 @@ static const struct mtk_mutex_data mt6789_mutex_driver_data = {
 	.mutex_sof = mt6789_mutex_sof,
 	.mutex_mod_reg = MT8183_MUTEX0_MOD0,
 	.mutex_sof_reg = MT8183_MUTEX0_SOF0,
+	.clear_mods = true,
 };
 
 static const struct mtk_mutex_data mt8183_mutex_driver_data = {
@@ -918,7 +923,36 @@ int mtk_mutex_prepare(struct mtk_mutex *mutex)
 {
 	struct mtk_mutex_ctx *mtx = container_of(mutex, struct mtk_mutex_ctx,
 						 mutex[mutex->id]);
-	return clk_prepare_enable(mtx->clk);
+	int ret;
+
+	pr_info("DBG mutex_prepare id=%d clear=%d regs=%px\n", mutex->id,
+		mtx->data->clear_mods, mtx->regs);
+	ret = clk_prepare_enable(mtx->clk);
+	if (ret)
+		return ret;
+
+	/*
+	 * MT6789: the bootloader leaves unrelated MOD bits set. The mutex
+	 * then waits for modules that are not in the pipeline and never
+	 * triggers, so start from a clean MOD/SOF state.
+	 */
+	if (mtx->data->clear_mods) {
+		mtx->mod_shadow[mutex->id] = 0;
+		writel(0, mtx->regs +
+		       DISP_REG_MUTEX_MOD(mtx, mtx->data->mutex_mod_reg, mutex->id));
+		if (mtx->data->mutex_mod1_reg)
+			writel(0, mtx->regs +
+			       DISP_REG_MUTEX_MOD(mtx, mtx->data->mutex_mod1_reg, mutex->id));
+		writel(0, mtx->regs +
+		       DISP_REG_MUTEX_SOF(mtx->data->mutex_sof_reg, mutex->id));
+		pr_info("DBG after clear mod=%x sof=%x\n",
+			readl_relaxed(mtx->regs + DISP_REG_MUTEX_MOD(mtx,
+				      mtx->data->mutex_mod_reg, mutex->id)),
+			readl_relaxed(mtx->regs + DISP_REG_MUTEX_SOF(
+				      mtx->data->mutex_sof_reg, mutex->id)));
+	}
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(mtk_mutex_prepare);
 
@@ -967,11 +1001,27 @@ void mtk_mutex_add_comp(struct mtk_mutex *mutex,
 		sof_id = MUTEX_SOF_DP_INTF1;
 		break;
 	default:
+		/* SoCs with more than 32 mods provide a second MOD register;
+		 * without one, writing the computed offset would hit an
+		 * unrelated register (offset 0 == MUTEX_INTEN).
+		 */
+		if (mtx->data->mutex_mod[id] >= 32 && !mtx->data->mutex_mod1_reg)
+			return;
+
 		offset = DISP_REG_MUTEX_MOD(mtx, mtx->data->mutex_mod[id], mutex->id);
 		mod_id = mtx->data->mutex_mod[id] % 32;
-		reg = readl_relaxed(mtx->regs + offset);
-		reg |= BIT(mod_id);
-		writel_relaxed(reg, mtx->regs + offset);
+		if (mtx->data->clear_mods) {
+			/* Keep the full intended MOD value in software: the
+			 * MT6789 mutex keeps stale bootloader bits on RMW.
+			 */
+			mtx->mod_shadow[mutex->id] |= BIT(mod_id);
+			writel_relaxed(mtx->mod_shadow[mutex->id],
+				       mtx->regs + offset);
+		} else {
+			reg = readl_relaxed(mtx->regs + offset);
+			reg |= BIT(mod_id);
+			writel_relaxed(reg, mtx->regs + offset);
+		}
 		return;
 	}
 
@@ -1007,6 +1057,8 @@ void mtk_mutex_remove_comp(struct mtk_mutex *mutex,
 						  mutex->id));
 		break;
 	default:
+		pr_info("DBG mutex_add id=%d comp=%d mod=%d\n", mutex->id, id,
+			mtx->data->mutex_mod[id]);
 		offset = DISP_REG_MUTEX_MOD(mtx, mtx->data->mutex_mod[id], mutex->id);
 		mod_id = mtx->data->mutex_mod[id] % 32;
 		reg = readl_relaxed(mtx->regs + offset);
@@ -1024,6 +1076,12 @@ void mtk_mutex_enable(struct mtk_mutex *mutex)
 
 	WARN_ON(&mtx->mutex[mutex->id] != mutex);
 
+	{
+		static int dbg_cnt;
+		if (dbg_cnt < 3)
+			pr_info("DBG mutex_enable id=%d\n", mutex->id);
+		dbg_cnt++;
+	}
 	writel(1, mtx->regs + DISP_REG_MUTEX_EN(mutex->id));
 }
 EXPORT_SYMBOL_GPL(mtk_mutex_enable);
@@ -1064,6 +1122,12 @@ void mtk_mutex_acquire(struct mtk_mutex *mutex)
 						 mutex[mutex->id]);
 	u32 tmp;
 
+	{
+		static int dbg_cnt;
+		if (dbg_cnt < 3)
+			pr_info("DBG mutex_enable id=%d\n", mutex->id);
+		dbg_cnt++;
+	}
 	writel(1, mtx->regs + DISP_REG_MUTEX_EN(mutex->id));
 	writel(1, mtx->regs + DISP_REG_MUTEX(mutex->id));
 	if (readl_poll_timeout_atomic(mtx->regs + DISP_REG_MUTEX(mutex->id),

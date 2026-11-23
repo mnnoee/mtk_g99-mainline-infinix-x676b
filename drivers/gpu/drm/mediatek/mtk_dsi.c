@@ -194,9 +194,9 @@ struct mtk_dsi_driver_data {
 	bool has_size_ctl;
 	bool cmdq_long_packet_ctl;
 	bool support_per_frame_lp;
-	bool dsi_en_bit0;
-	bool no_reset_engine;
 	bool poll_cmd_done;
+	bool ext_te;
+	bool no_vm_cmd;
 };
 
 struct mtk_dsi {
@@ -295,32 +295,18 @@ static void mtk_dsi_phy_timconfig(struct mtk_dsi *dsi)
 
 static void mtk_dsi_lane_ready(struct mtk_dsi *dsi);
 
-static u32 mtk_dsi_en_bit(struct mtk_dsi *dsi)
-{
-	/* MT6789 keeps DSI_EN in bit 0, every other SoC uses bit 1. */
-	return dsi->driver_data->dsi_en_bit0 ? BIT(0) : DSI_EN;
-}
-
 static void mtk_dsi_enable(struct mtk_dsi *dsi)
 {
-	u32 en = mtk_dsi_en_bit(dsi);
-
-	mtk_dsi_mask(dsi, DSI_CON_CTRL, en, en);
+	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_EN, DSI_EN);
 }
 
 static void mtk_dsi_disable(struct mtk_dsi *dsi)
 {
-	mtk_dsi_mask(dsi, DSI_CON_CTRL, mtk_dsi_en_bit(dsi), 0);
+	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_EN, 0);
 }
 
 static void mtk_dsi_reset_engine(struct mtk_dsi *dsi)
 {
-	/* On MT6789 DSI_RESET shares the register with DSI_EN, toggling it
-	 * would disable the controller right after enabling it.
-	 */
-	if (dsi->driver_data->no_reset_engine)
-		return;
-
 	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_RESET, DSI_RESET);
 	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_RESET, 0);
 }
@@ -408,6 +394,10 @@ static void mtk_dsi_rxtx_control(struct mtk_dsi *dsi)
 
 	if (dsi->mode_flags & MIPI_DSI_MODE_NO_EOT_PACKET)
 		regval |= DIS_EOT;
+
+	/* MT6789 command mode: frames are driven by the panel TE signal. */
+	if (dsi->driver_data->ext_te)
+		regval |= EXT_TE_EN;
 
 	writel(regval, dsi->regs + DSI_TXRX_CTRL);
 }
@@ -741,7 +731,8 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	mtk_dsi_phy_timconfig(dsi);
 
 	mtk_dsi_ps_control(dsi, true);
-	mtk_dsi_set_vm_cmd(dsi);
+	if (!dsi->driver_data->no_vm_cmd)
+		mtk_dsi_set_vm_cmd(dsi);
 	mtk_dsi_config_vdo_timing(dsi);
 	mtk_dsi_set_interrupt_enable(dsi);
 
@@ -949,6 +940,25 @@ void mtk_dsi_ddp_trigger(struct device *dev)
 
 	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO)
 		return;
+
+	/*
+	 * Command mode frame transfer: DCS 0x2C (write_memory_start) must sit
+	 * in the command queue, the panel then clocks a frame out of RDMA.
+	 * Without it the queue keeps the last DCS command and no pixel data
+	 * is ever requested from RDMA.
+	 */
+	writel(0x2c3909, dsi->regs + dsi->driver_data->reg_cmdq_off);
+	writel(0x8001, dsi->regs + DSI_CMDQ_SIZE);
+
+	/*
+	 * With EXT_TE the controller starts on the panel TE event, the
+	 * engine just has to stay enabled.
+	 */
+	if (dsi->driver_data->ext_te) {
+		if (!(readl(dsi->regs + DSI_START) & BIT(0)))
+			writel(1, dsi->regs + DSI_START);
+		return;
+	}
 
 	start = readl(dsi->regs + DSI_START);
 	writel(start & ~1, dsi->regs + DSI_START);
@@ -1330,10 +1340,10 @@ static const struct mtk_dsi_driver_data mt6789_dsi_driver_data = {
 	.has_shadow_ctl = false,
 	.has_size_ctl = true,
 	.support_per_frame_lp = true,
-	.dsi_en_bit0 = true,
-	.no_reset_engine = true,
 	.cmdq_long_packet_ctl = true,
 	.poll_cmd_done = true,
+	.ext_te = true,
+	.no_vm_cmd = true,
 };
 
 static const struct mtk_dsi_driver_data mt8173_dsi_driver_data = {
