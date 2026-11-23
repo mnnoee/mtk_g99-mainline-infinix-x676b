@@ -150,6 +150,7 @@ struct mtk_disp_ovl_data {
 	const u32 *formats;
 	size_t num_formats;
 	bool supports_clrfmt_ext;
+	bool mirror_layer1;
 };
 
 /*
@@ -569,6 +570,27 @@ void mtk_ovl_layer_config(struct device *dev, unsigned int idx,
 
 	mtk_ovl_set_bit_depth(dev, idx, fmt, cmdq_pkt);
 	mtk_ovl_layer_on(dev, idx, cmdq_pkt);
+
+	/*
+	 * MT6789: the working bootloader/refresher state scans out layer 1
+	 * (same buffer as layer 0, SRC_CON = 0x3). Mirror the configuration
+	 * so the DRM framebuffer is what actually reaches RDMA/DSI.
+	 */
+	if (ovl->data->mirror_layer1 && idx == 0) {
+		mtk_ddp_write_relaxed(cmdq_pkt, con, &ovl->cmdq_reg, ovl->regs,
+				      DISP_REG_OVL_CON(1));
+		mtk_ddp_write_relaxed(cmdq_pkt, pitch_lsb | ignore_pixel_alpha,
+				      &ovl->cmdq_reg, ovl->regs,
+				      DISP_REG_OVL_PITCH(1));
+		mtk_ddp_write_relaxed(cmdq_pkt, src_size, &ovl->cmdq_reg,
+				      ovl->regs, DISP_REG_OVL_SRC_SIZE(1));
+		mtk_ddp_write_relaxed(cmdq_pkt, offset, &ovl->cmdq_reg, ovl->regs,
+				      DISP_REG_OVL_OFFSET(1));
+		mtk_ddp_write_relaxed(cmdq_pkt, addr, &ovl->cmdq_reg, ovl->regs,
+				      DISP_REG_OVL_ADDR(ovl, 1));
+		mtk_ovl_set_bit_depth(dev, 1, fmt, cmdq_pkt);
+		mtk_ovl_layer_on(dev, 1, cmdq_pkt);
+	}
 }
 
 void mtk_ovl_bgclr_in_on(struct device *dev)
@@ -698,6 +720,21 @@ static const struct mtk_disp_ovl_data mt8183_ovl_2l_driver_data = {
 	.num_formats = ARRAY_SIZE(mt8173_formats),
 };
 
+static const struct mtk_disp_ovl_data mt6789_ovl_driver_data = {
+	.addr = DISP_REG_OVL_ADDR_MT8173,
+	.gmc_bits = 10,
+	.layer_nr = 4,
+	.fmt_rgb565_is_0 = true,
+	.smi_id_en = true,
+	.blend_modes = BIT(DRM_MODE_BLEND_PREMULTI) |
+		       BIT(DRM_MODE_BLEND_COVERAGE) |
+		       BIT(DRM_MODE_BLEND_PIXEL_NONE),
+	.formats = mt8173_formats,
+	.num_formats = ARRAY_SIZE(mt8173_formats),
+	/* The bootloader scans out OVL layer 1 on this panel path. */
+	.mirror_layer1 = true,
+};
+
 static const struct mtk_disp_ovl_data mt8192_ovl_driver_data = {
 	.addr = DISP_REG_OVL_ADDR_MT8173,
 	.gmc_bits = 10,
@@ -751,7 +788,7 @@ static const struct of_device_id mtk_disp_ovl_driver_dt_match[] = {
 	{ .compatible = "mediatek,mt8192-disp-ovl",
 	  .data = &mt8192_ovl_driver_data},
 	{ .compatible = "mediatek,mt6789-disp-ovl",
-	  .data = &mt8192_ovl_driver_data},
+	  .data = &mt6789_ovl_driver_data},
 	{ .compatible = "mediatek,mt8192-disp-ovl-2l",
 	  .data = &mt8192_ovl_2l_driver_data},
 	{ .compatible = "mediatek,mt8195-disp-ovl",
