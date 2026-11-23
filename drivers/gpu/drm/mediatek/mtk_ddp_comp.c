@@ -379,6 +379,7 @@ static const struct mtk_ddp_comp_funcs ddp_postmask = {
 };
 
 static const struct mtk_ddp_comp_funcs ddp_rdma = {
+	.mem_config = mtk_rdma_set_memory,
 	.clk_enable = mtk_rdma_clk_enable,
 	.clk_disable = mtk_rdma_clk_disable,
 	.config = mtk_rdma_config,

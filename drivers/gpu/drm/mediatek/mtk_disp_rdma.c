@@ -170,6 +170,45 @@ void mtk_rdma_clk_disable(struct device *dev)
 	clk_disable_unprepare(rdma->clk);
 }
 
+/*
+ * MT6789 command mode: the vendor DRM lets RDMA read the scanout buffer
+ * from DRAM directly instead of pulling it through OVL. Verified on
+ * hardware: this is what actually feeds the DSI frame request.
+ */
+void mtk_rdma_set_memory(struct device *dev, dma_addr_t addr,
+			 unsigned int pitch, unsigned int format)
+{
+	struct mtk_disp_rdma *rdma = dev_get_drvdata(dev);
+	u32 mem_con;
+
+	switch (format) {
+	case DRM_FORMAT_RGB565:
+		mem_con = MEM_MODE_INPUT_FORMAT_RGB565 | MEM_MODE_INPUT_SWAP;
+		break;
+	case DRM_FORMAT_RGB888:
+		mem_con = MEM_MODE_INPUT_FORMAT_RGB888;
+		break;
+	case DRM_FORMAT_BGR888:
+		mem_con = MEM_MODE_INPUT_FORMAT_RGB888 | MEM_MODE_INPUT_SWAP;
+		break;
+	case DRM_FORMAT_ARGB8888:
+	case DRM_FORMAT_XRGB8888:
+	default:
+		mem_con = MEM_MODE_INPUT_FORMAT_ARGB8888;
+		break;
+	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_XBGR8888:
+		mem_con = MEM_MODE_INPUT_FORMAT_ARGB8888 | MEM_MODE_INPUT_SWAP;
+		break;
+	}
+
+	writel(mem_con, rdma->regs + DISP_RDMA_MEM_CON);
+	writel(pitch, rdma->regs + DISP_RDMA_MEM_SRC_PITCH);
+	writel(lower_32_bits(addr), rdma->regs + DISP_RDMA_MEM_START_ADDR);
+	writel(RDMA_ENGINE_EN | RDMA_MODE_MEMORY,
+	       rdma->regs + DISP_REG_RDMA_GLOBAL_CON);
+}
+
 void mtk_rdma_start(struct device *dev)
 {
 	rdma_update_bits(dev, DISP_REG_RDMA_GLOBAL_CON, RDMA_ENGINE_EN,

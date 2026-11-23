@@ -15,6 +15,8 @@
 #include <asm/barrier.h>
 
 #include <drm/drm_atomic.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
@@ -75,6 +77,8 @@ struct mtk_crtc {
 
 	/* command-mode panels need a frame trigger + fake vblank */
 	struct delayed_work		cmd_mode_work;
+	dma_addr_t			cmd_fb_addr;
+	unsigned int			cmd_fb_pitch;
 };
 
 struct mtk_crtc_state {
@@ -135,6 +139,7 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 {
 	struct mtk_crtc *mtk_crtc = container_of(work, struct mtk_crtc,
 						 cmd_mode_work.work);
+	int i;
 
 	if (!mtk_crtc->enabled)
 		return;
@@ -146,6 +151,40 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	 * it from the trigger tick.
 	 */
 	mtk_crtc_ddp_irq(&mtk_crtc->base);
+
+	/*
+	 * MT6789 command mode: pull the frame from DRAM through RDMA
+	 * (memory mode) - verified on hardware to be the path that actually
+	 * feeds the DSI 0x2C frame request.
+	 */
+	{
+		struct drm_plane *plane = &mtk_crtc->planes[0];
+		struct drm_plane_state *ps = plane->state;
+
+		if (ps && ps->fb && ps->crtc) {
+			dma_addr_t addr = drm_fb_dma_get_gem_addr(ps->fb, ps, 0);
+
+			/* Re-arming RDMA every frame aborts the running
+			 * transfer, so only reprogram it when the buffer
+			 * actually changes.
+			 */
+			if (addr != mtk_crtc->cmd_fb_addr ||
+			    ps->fb->pitches[0] != mtk_crtc->cmd_fb_pitch) {
+				for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
+					struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
+
+					if (comp->funcs && comp->funcs->mem_config) {
+						comp->funcs->mem_config(comp->dev, addr,
+							ps->fb->pitches[0],
+							ps->fb->format->format);
+						break;
+					}
+				}
+				mtk_crtc->cmd_fb_addr = addr;
+				mtk_crtc->cmd_fb_pitch = ps->fb->pitches[0];
+			}
+		}
+	}
 
 	/* Single-shot mutex: one software trigger per frame. */
 	mtk_mutex_enable(mtk_crtc->mutex);

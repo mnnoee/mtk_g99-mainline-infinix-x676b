@@ -144,6 +144,8 @@ enum drm_mode_status mtk_ovl_adaptor_mode_valid(struct device *dev,
 void mtk_rdma_bypass_shadow(struct device *dev);
 int mtk_rdma_clk_enable(struct device *dev);
 void mtk_rdma_clk_disable(struct device *dev);
+void mtk_rdma_set_memory(struct device *dev, dma_addr_t addr,
+			 unsigned int pitch, unsigned int format);
 void mtk_rdma_config(struct device *dev, unsigned int width,
 		     unsigned int height, unsigned int vrefresh,
 		     unsigned int bpc, struct cmdq_pkt *cmdq_pkt);

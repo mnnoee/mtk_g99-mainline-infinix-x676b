@@ -1021,6 +1021,20 @@ void mtk_mutex_add_comp(struct mtk_mutex *mutex,
 	writel_relaxed(mtx->data->mutex_sof[sof_id],
 		       mtx->regs +
 		       DISP_REG_MUTEX_SOF(mtx->data->mutex_sof_reg, mutex->id));
+
+	/*
+	 * MT6789 (command mode, clear_mods): the SOF source also has to be
+	 * listed in MOD, otherwise the mutex does not trigger the pipeline
+	 * (the vendor value is 0x4405 = OVL0|RDMA0|DITHER0|DSI0).
+	 */
+	if (mtx->data->clear_mods && mtx->data->mutex_mod[id] < 32) {
+		u32 offset = DISP_REG_MUTEX_MOD(mtx, mtx->data->mutex_mod[id],
+						mutex->id);
+		u32 mod_id = mtx->data->mutex_mod[id] % 32;
+
+		mtx->mod_shadow[mutex->id] |= BIT(mod_id);
+		writel_relaxed(mtx->mod_shadow[mutex->id], mtx->regs + offset);
+	}
 }
 EXPORT_SYMBOL_GPL(mtk_mutex_add_comp);
 

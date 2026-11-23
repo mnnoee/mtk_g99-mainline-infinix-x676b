@@ -1342,7 +1342,6 @@ static const struct mtk_dsi_driver_data mt6789_dsi_driver_data = {
 	.support_per_frame_lp = true,
 	.cmdq_long_packet_ctl = true,
 	.poll_cmd_done = true,
-	.ext_te = true,
 	.no_vm_cmd = true,
 };
 

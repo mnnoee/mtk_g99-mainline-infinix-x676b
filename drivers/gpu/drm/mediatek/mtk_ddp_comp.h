@@ -59,6 +59,8 @@ struct mtk_ddp_comp_funcs {
 	void (*start)(struct device *dev);
 	void (*stop)(struct device *dev);
 	void (*trigger)(struct device *dev);
+	void (*mem_config)(struct device *dev, dma_addr_t addr,
+			   unsigned int pitch, unsigned int format);
 	void (*register_vblank_cb)(struct device *dev,
 				   void (*vblank_cb)(void *),
 				   void *vblank_cb_data);
