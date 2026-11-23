@@ -234,6 +234,29 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 			mtk_drm_finish_page_flip(mtk_crtc);
 	}
 
+	if (!cmd_memory_mode) {
+		struct drm_plane *plane = &mtk_crtc->planes[0];
+		struct drm_plane_state *ps = plane->state;
+
+		if (ps && ps->fb) {
+			dma_addr_t addr = drm_fb_dma_get_gem_addr(ps->fb, ps, 0);
+
+			if (addr != mtk_crtc->cmd_fb_addr) {
+				for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
+					struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
+
+					if (comp->funcs && comp->funcs->scanout_config) {
+						comp->funcs->scanout_config(comp->dev,
+							addr, ps->fb->pitches[0],
+							ps->fb->width, ps->fb->height);
+						break;
+					}
+				}
+				mtk_crtc->cmd_fb_addr = addr;
+			}
+		}
+	}
+
 	if (cmd_memory_mode) {
 		struct drm_plane *plane = &mtk_crtc->planes[0];
 		struct drm_plane_state *ps = plane->state;
@@ -253,6 +276,10 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 			}
 		}
 	}
+
+	/* Re-arm RDMA before each frame in the direct path. */
+	if (!cmd_memory_mode && mtk_crtc->ddp_comp_nr > 1)
+		mtk_ddp_comp_start(mtk_crtc->ddp_comp[1]);
 
 	/* Single-shot mutex: one software trigger per frame. */
 	mtk_mutex_enable(mtk_crtc->mutex);

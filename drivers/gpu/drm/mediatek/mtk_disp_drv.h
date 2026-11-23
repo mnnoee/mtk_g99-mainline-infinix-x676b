@@ -82,6 +82,9 @@ void mtk_ovl_bgclr_in_off(struct device *dev);
 void mtk_ovl_bypass_shadow(struct device *dev);
 int mtk_ovl_clk_enable(struct device *dev);
 void mtk_ovl_clk_disable(struct device *dev);
+void mtk_ovl_set_scanout(struct device *dev, dma_addr_t addr,
+			 unsigned int pitch, unsigned int width,
+			 unsigned int height);
 void mtk_ovl_config(struct device *dev, unsigned int w,
 		    unsigned int h, unsigned int vrefresh,
 		    unsigned int bpc, struct cmdq_pkt *cmdq_pkt);

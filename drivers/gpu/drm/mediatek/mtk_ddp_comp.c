@@ -349,6 +349,7 @@ static const struct mtk_ddp_comp_funcs ddp_od = {
 };
 
 static const struct mtk_ddp_comp_funcs ddp_ovl = {
+	.scanout_config = mtk_ovl_set_scanout,
 	.clk_enable = mtk_ovl_clk_enable,
 	.clk_disable = mtk_ovl_clk_disable,
 	.config = mtk_ovl_config,

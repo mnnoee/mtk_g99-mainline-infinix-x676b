@@ -311,6 +311,37 @@ static void mtk_ovl_set_bit_depth(struct device *dev, int idx, u32 format,
 			   OVL_CON_CLRFMT_BIT_DEPTH_MASK(idx));
 }
 
+/*
+ * MT6789 direct path: point both overlay layers at the scanout buffer.
+ * ddp_config only runs on atomic commits, but a command-mode panel needs
+ * the layer programmed before the very first frame trigger.
+ */
+void mtk_ovl_set_scanout(struct device *dev, dma_addr_t addr,
+			 unsigned int pitch, unsigned int width,
+			 unsigned int height)
+{
+	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
+	unsigned int i;
+
+	for (i = 0; i < 2; i++) {
+		/* BGRA8888 (XRGB in memory) + alpha, as the working state */
+		mtk_ddp_write_relaxed(NULL, 0x008030ff, &ovl->cmdq_reg, ovl->regs,
+				      DISP_REG_OVL_CON(i));
+		mtk_ddp_write_relaxed(NULL, pitch & GENMASK(15, 0), &ovl->cmdq_reg,
+				      ovl->regs, DISP_REG_OVL_PITCH(i));
+		mtk_ddp_write_relaxed(NULL, (height << 16) | width,
+				      &ovl->cmdq_reg, ovl->regs,
+				      DISP_REG_OVL_SRC_SIZE(i));
+		mtk_ddp_write_relaxed(NULL, 0, &ovl->cmdq_reg, ovl->regs,
+				      DISP_REG_OVL_OFFSET(i));
+		mtk_ddp_write_relaxed(NULL, lower_32_bits(addr), &ovl->cmdq_reg,
+				      ovl->regs, DISP_REG_OVL_ADDR(ovl, i));
+		mtk_ddp_write_mask(NULL, BIT(i), &ovl->cmdq_reg, ovl->regs,
+				   DISP_REG_OVL_SRC_CON, BIT(i));
+	}
+	writel_relaxed(0x1, ovl->regs + DISP_REG_OVL_EN);
+}
+
 void mtk_ovl_config(struct device *dev, unsigned int w,
 		    unsigned int h, unsigned int vrefresh,
 		    unsigned int bpc, struct cmdq_pkt *cmdq_pkt)
