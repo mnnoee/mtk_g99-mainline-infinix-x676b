@@ -249,6 +249,27 @@ static int mtk_musb_set_mode(struct musb *musb, u8 mode)
 	}
 
 	mtk_otg_switch_set(glue, new_role);
+
+	/*
+	 * Follow the new role in the core as well.  musb_start() selects the
+	 * host session or peripheral mode from musb->port_mode; without this
+	 * a dr_mode="otg" port stays in a_wait_vrise (there is no VBUS-detect
+	 * source in mainline) and the HCD never starts.  Switching port_mode
+	 * makes the runtime role change behave exactly like dr_mode="host"
+	 * (or "peripheral") does at probe time.
+	 */
+	musb->port_mode = (mode == MUSB_HOST) ? MUSB_HOST : MUSB_PERIPHERAL;
+	musb_start(musb);
+
+	/*
+	 * musb_start() rewrites MUSB_POWER, which clears SOFTCONN.  When the
+	 * port goes back to peripheral, that silently drops the gadget's D+
+	 * pullup and the host stops seeing us ("not attached" in the UDC
+	 * state).  Re-apply the pullup the gadget driver asked for.
+	 */
+	if (mode == MUSB_PERIPHERAL && musb->softconnect)
+		schedule_delayed_work(&musb->gadget_work, 0);
+
 	return 0;
 }
 
