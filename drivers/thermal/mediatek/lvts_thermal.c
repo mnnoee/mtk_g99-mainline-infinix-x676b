@@ -853,9 +853,9 @@ static int lvts_calibration_init(struct device *dev, struct lvts_ctrl *lvts_ctrl
 			return ret;
 
 		/*
-		 * MT6789: неоткалиброванные каналы содержат в efuse не count_r,
-		 * а RC-счётчик (~0xAA3), что даёт мусорную температуру.
-		 * Считаем такие значения отсутствующей калибровкой.
+		 * MT6789: uncalibrated channels store an RC counter (~0xAA3)
+		 * in the efuse instead of count_r, which produces a bogus
+		 * temperature. Treat such values as missing calibration.
 		 */
 		if (gt && calib >= 0x1000) {
 			lvts_ctrl->calibration[i] = calib;
