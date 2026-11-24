@@ -1172,6 +1172,19 @@ static const unsigned int mt6789_pull_type[] = {
 	1 /* 175 */, 1 /* 176 */, 1 /* 177 */, 1 /* 178 */, 1 /* 179 */,
 	1 /* 180 */, 1 /* 181 */, 1 /* 182 */, 1 /* 183 */, 1 /* 184 */,
 	1 /* 185 */, 1 /* 186 */, 1 /* 187 */,
+	/*
+	 * The vendor table has no entries for GPIO188..221, which made
+	 * mtk_pinconf_bias_get_combo() read past the end of the array (KASAN
+	 * global-out-of-bounds when dumping pinconf). Neighbouring GPIOs use
+	 * the PU/PD type, use it here as well.
+	 */
+	1 /* 188 */, 1 /* 189 */, 1 /* 190 */, 1 /* 191 */, 1 /* 192 */,
+	1 /* 193 */, 1 /* 194 */, 1 /* 195 */, 1 /* 196 */, 1 /* 197 */,
+	1 /* 198 */, 1 /* 199 */, 1 /* 200 */, 1 /* 201 */, 1 /* 202 */,
+	1 /* 203 */, 1 /* 204 */, 1 /* 205 */, 1 /* 206 */, 1 /* 207 */,
+	1 /* 208 */, 1 /* 209 */, 1 /* 210 */, 1 /* 211 */, 1 /* 212 */,
+	1 /* 213 */, 1 /* 214 */, 1 /* 215 */, 1 /* 216 */, 1 /* 217 */,
+	1 /* 218 */, 1 /* 219 */, 1 /* 220 */, 1 /* 221 */,
 };
 /*
 static const struct mtk_eh_pin_pinmux mt6789_eh_pin_pinmux_list[] = {
