@@ -51,7 +51,7 @@ distribution on a UFS partition.
 Every constant in this tree has a traceable origin; none of it was invented:
 
 * **Disassembly of the stock bootloader.** The `lk_a` partition was dumped
-  from the device and disassembled (Ghidra and an in-house REA toolchain).
+  from the device and disassembled with Ghidra.
   The DSI command sequences, OVL/RDMA/mutex programming, the panel init
   table, EMI MPU encoding and the display clock/power gates come from that
   code.
@@ -81,10 +81,11 @@ Every constant in this tree has a traceable origin; none of it was invented:
 * `arch/arm64/boot/dts/mediatek/mt6789-infinix-x676b-linux.dts` — upstream-style
   DTS (kbuild).
 * `arch/arm64/boot/dts/mediatek/mt6789-infinix-x676b-live.dts` — flattened DTS
-  actually used on the device (PMIC, LVTS, audio, SD, framebuffer,
+  actually used on the device (PMIC, LVTS, audio, SD, display/DRM,
   reserved-memory).
-* `arch/arm64/boot/dts/mediatek/mt6789-infinix-x676b-live.dtb` — prebuilt DTB
-  (v49) matching the `-live.dts` above.
+* `arch/arm64/boot/dts/mediatek/mt6789-infinix-x676b-live.dtb` — the prebuilt
+  DTB that boots and works with this tree (the same blob the board loads);
+  `dtc` on the `-live.dts` above reproduces it byte for byte.
 
 Build the DTB with `dtc` (not kbuild):
 

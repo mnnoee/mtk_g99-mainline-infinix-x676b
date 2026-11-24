@@ -41,8 +41,33 @@
 		compatible = "mediatek,mt6789-mt6366-sound";
 		mediatek,platform = <&afe>;
 
+		/* FS1559VN one-wire mode/enable line for the second
+		 * (receiver / top) speaker amplifier, GPIO150.
+		 */
+		fs1559-extamp-gpios = <0x0d 0x96 0x00>;
+
 		mediatek,speaker-codec {
 		};
+	};
+
+	/*
+	 * GPS/GNSS: STP transport + L1 LNA on GPIO25.  The vendor node is
+	 * top-level (no reg); the driver only needs the pinctrl states.
+	 * L5 LNA (GPIO26) is intentionally not used: that pin is the USB
+	 * OTG VBUS switch on this board.
+	 */
+	gps: gps@18c00000 {
+		compatible = "x676b,gps-stp";
+		pinctrl-names = "default", "gps_l1_lna_disable",
+				"gps_l1_lna_dsp_ctrl", "gps_l1_lna_enable";
+		pinctrl-0 = <&gps_pins_default>;
+		pinctrl-1 = <&gps_l1_lna_pins_ol>;
+		pinctrl-2 = <&gps_l1_lna_pins_dsp_ctrl>;
+		pinctrl-3 = <&gps_l1_lna_pins_oh>;
+		emi-region = <29>;
+		emi-offset = <0x400000>;
+		emi-size = <0xfffff>;
+		status = "okay";
 	};
 
 	cpus {
@@ -261,11 +286,57 @@
 				#size-cells = <0x00>;
 				#power-domain-cells = <0x01>;
 
+				/* CONN MTCMOS: needed by the CONSYS/Wi-Fi block */
+				power-domain@1 {
+					reg = <0x01>;
+					#power-domain-cells = <0x00>;
+				};
+
+				/* GPU MFG hierarchy: MFG0 -> MFG1 -> MFG2/MFG3 */
+				mfg0: power-domain@2 {
+					reg = <0x02>;
+					clocks = <0x10 105>, <0x10 104>;
+					clock-names = "mfg", "alt";
+					domain-supply = <&mt6358_vsram_gpu_reg>;
+					#address-cells = <0x01>;
+					#size-cells = <0x00>;
+					#power-domain-cells = <0x01>;
+
+					mfg1: power-domain@3 {
+						reg = <0x03>;
+						mediatek,infracfg = <0x11>;
+						domain-supply = <&mt6358_vgpu_reg>;
+						#address-cells = <0x01>;
+						#size-cells = <0x00>;
+						#power-domain-cells = <0x01>;
+
+						power-domain@4 {
+							reg = <0x04>;
+							#power-domain-cells = <0x00>;
+						};
+
+						power-domain@5 {
+							reg = <0x05>;
+							#power-domain-cells = <0x00>;
+						};
+					};
+				};
+
 				power-domain@b {
 					reg = <0x0b>;
 					clocks = <0x10 118>, <0x11 37>, <0x11 32>;
 					clock-names = "audio", "audio1", "audio2";
 					mediatek,infracfg = <0x11>;
+					#power-domain-cells = <0x00>;
+				};
+
+				/* DISP MTCMOS: needed by the display pipeline.
+				 * No clocks here on purpose: the mm clock gates are
+				 * handled by the mmsys driver, and we boot with
+				 * clk_ignore_unused/pd_ignore_unused.
+				 */
+				disp: power-domain@a {
+					reg = <0x0a>;
 					#power-domain-cells = <0x00>;
 				};
 			};
@@ -306,6 +377,19 @@
 					/* SD card: VDD (VMCH) and VccQ (VMC) come from the
 					 * PMIC, not from fixed regulators.
 					 */
+					/* supplies requested by the MT6789 consys driver */
+					vcn28: vcn28 {
+						regulator-name = "vcn28";
+						regulator-min-microvolt = <2800000>;
+						regulator-max-microvolt = <2800000>;
+					};
+
+					vcn33: vcn33 {
+						regulator-name = "vcn33";
+						regulator-min-microvolt = <1800000>;
+						regulator-max-microvolt = <3300000>;
+					};
+
 					mt6358_vmch_reg: vmch {
 						regulator-name = "vmch";
 						regulator-min-microvolt = <2900000>;
@@ -328,6 +412,28 @@
 						regulator-name = "vpa";
 						regulator-min-microvolt = <500000>;
 						regulator-max-microvolt = <3650000>;
+					};
+
+					/* GPU rails: MT6366 buck_vgpu + ldo_vsram_gpu (coupled) */
+					mt6358_vgpu_reg: vgpu {
+						regulator-name = "vgpu";
+						regulator-min-microvolt = <0x7a120>;
+						regulator-max-microvolt = <0x13bdb6>;
+						regulator-ramp-delay = <0x186a>;
+						regulator-enable-ramp-delay = <0xc8>;
+						regulator-allowed-modes = <0x00 0x01>;
+						regulator-coupled-with = <&mt6358_vsram_gpu_reg>;
+						regulator-coupled-max-spread = <0x186a0>;
+					};
+
+					mt6358_vsram_gpu_reg: vsram-gpu {
+						regulator-name = "vsram_gpu";
+						regulator-min-microvolt = <0x7a120>;
+						regulator-max-microvolt = <0x13bdb6>;
+						regulator-ramp-delay = <0x186a>;
+						regulator-enable-ramp-delay = <0xf0>;
+						regulator-coupled-with = <&mt6358_vgpu_reg>;
+						regulator-coupled-max-spread = <0x186a0>;
 					};
 
 					mt6358_vproc11_reg: vproc11 {
@@ -526,10 +632,23 @@
 				thermal-sensors = <&lvts 8>;
 
 				trips {
+					gpu0_alert: trip-alert {
+						temperature = <0x14c08>;
+						hysteresis = <0x7d0>;
+						type = "passive";
+					};
+
 					gpu0_crit: trip-crit {
 						temperature = <0x1adb0>;
 						hysteresis = <0x7d0>;
 						type = "critical";
+					};
+				};
+
+				cooling-maps {
+					map0 {
+						trip = <&gpu0_alert>;
+						cooling-device = <&gpu 0xffffffff 0xffffffff>;
 					};
 				};
 			};
@@ -540,10 +659,23 @@
 				thermal-sensors = <&lvts 9>;
 
 				trips {
+					gpu1_alert: trip-alert {
+						temperature = <0x14c08>;
+						hysteresis = <0x7d0>;
+						type = "passive";
+					};
+
 					gpu1_crit: trip-crit {
 						temperature = <0x1adb0>;
 						hysteresis = <0x7d0>;
 						type = "critical";
+					};
+				};
+
+				cooling-maps {
+					map0 {
+						trip = <&gpu1_alert>;
+						cooling-device = <&gpu 0xffffffff 0xffffffff>;
 					};
 				};
 			};
@@ -738,16 +870,221 @@
 			};
 		};
 
-		syscon@13fbf000 {
-			compatible = "mediatek,mt6789-mfg", "mediatek,mt8781-mfg", "syscon";
+		mfgcfg: syscon@13fbf000 {
+			compatible = "mediatek,mt6789-mfgcfg", "mediatek,mt6789-mfg", "mediatek,mt8781-mfg", "syscon";
 			reg = <0x13fbf000 0x1000>;
 			#clock-cells = <0x01>;
 		};
 
-		syscon@14000000 {
+		gpu: gpu@13000000 {
+			compatible = "mediatek,mt6789-mali", "arm,mali-valhall-jm";
+			reg = <0x13000000 0x4000>;
+			interrupts = <0x00 0x18e 0x04 0x00>,
+				     <0x00 0x18d 0x04 0x00>,
+				     <0x00 0x18c 0x04 0x00>;
+			interrupt-names = "job", "mmu", "gpu";
+			clocks = <&mfgcfg 0x00>;
+			power-domains = <&spm 0x04>, <&spm 0x05>;
+			power-domain-names = "core0", "core1";
+			operating-points-v2 = <&gpu_opp_table>;
+			mali-supply = <&mt6358_vgpu_reg>;
+			#cooling-cells = <0x02>;
+			status = "okay";
+		};
+
+		gpu_opp_table: opp-table {
+			compatible = "operating-points-v2";
+			opp-shared;
+
+			opp00 { opp-hz = /bits/ 64 <1100000000>; opp-microvolt = <850000>; };
+			opp01 { opp-hz = /bits/ 64 <1086000000>; opp-microvolt = <843750>; };
+			opp02 { opp-hz = /bits/ 64 <1072000000>; opp-microvolt = <837500>; };
+			opp03 { opp-hz = /bits/ 64 <1058000000>; opp-microvolt = <831250>; };
+			opp04 { opp-hz = /bits/ 64 <1045000000>; opp-microvolt = <825000>; };
+			opp05 { opp-hz = /bits/ 64 <1031000000>; opp-microvolt = <818750>; };
+			opp06 { opp-hz = /bits/ 64 <1017000000>; opp-microvolt = <812500>; };
+			opp07 { opp-hz = /bits/ 64 <1003000000>; opp-microvolt = <806250>; };
+			opp09 { opp-hz = /bits/ 64 <976000000>; opp-microvolt = <793750>; };
+			opp10 { opp-hz = /bits/ 64 <962000000>; opp-microvolt = <781250>; };
+			opp11 { opp-hz = /bits/ 64 <948000000>; opp-microvolt = <775000>; };
+			opp12 { opp-hz = /bits/ 64 <935000000>; opp-microvolt = <768750>; };
+			opp13 { opp-hz = /bits/ 64 <921000000>; opp-microvolt = <762500>; };
+			opp14 { opp-hz = /bits/ 64 <907000000>; opp-microvolt = <756250>; };
+			opp15 { opp-hz = /bits/ 64 <893000000>; opp-microvolt = <750000>; };
+			opp16 { opp-hz = /bits/ 64 <880000000>; opp-microvolt = <743750>; };
+			opp17 { opp-hz = /bits/ 64 <868000000>; opp-microvolt = <737500>; };
+			opp18 { opp-hz = /bits/ 64 <857000000>; opp-microvolt = <731250>; };
+			opp19 { opp-hz = /bits/ 64 <846000000>; opp-microvolt = <725000>; };
+			opp20 { opp-hz = /bits/ 64 <835000000>; opp-microvolt = <718750>; };
+			opp21 { opp-hz = /bits/ 64 <823000000>; opp-microvolt = <712500>; };
+			opp22 { opp-hz = /bits/ 64 <812000000>; opp-microvolt = <706250>; };
+			opp23 { opp-hz = /bits/ 64 <801000000>; opp-microvolt = <706250>; };
+			opp24 { opp-hz = /bits/ 64 <790000000>; opp-microvolt = <700000>; };
+			opp25 { opp-hz = /bits/ 64 <778000000>; opp-microvolt = <693750>; };
+			opp26 { opp-hz = /bits/ 64 <767000000>; opp-microvolt = <687500>; };
+			opp27 { opp-hz = /bits/ 64 <756000000>; opp-microvolt = <681250>; };
+			opp28 { opp-hz = /bits/ 64 <745000000>; opp-microvolt = <675000>; };
+			opp29 { opp-hz = /bits/ 64 <733000000>; opp-microvolt = <668750>; };
+			opp30 { opp-hz = /bits/ 64 <722000000>; opp-microvolt = <662500>; };
+			opp31 { opp-hz = /bits/ 64 <711000000>; opp-microvolt = <656250>; };
+			opp32 { opp-hz = /bits/ 64 <700000000>; opp-microvolt = <650000>; };
+			opp33 { opp-hz = /bits/ 64 <674000000>; opp-microvolt = <643750>; };
+			opp34 { opp-hz = /bits/ 64 <648000000>; opp-microvolt = <637500>; };
+			opp35 { opp-hz = /bits/ 64 <622000000>; opp-microvolt = <631250>; };
+			opp36 { opp-hz = /bits/ 64 <596000000>; opp-microvolt = <625000>; };
+			opp37 { opp-hz = /bits/ 64 <570000000>; opp-microvolt = <618750>; };
+			opp38 { opp-hz = /bits/ 64 <545000000>; opp-microvolt = <612500>; };
+			opp39 { opp-hz = /bits/ 64 <519000000>; opp-microvolt = <606250>; };
+			opp40 { opp-hz = /bits/ 64 <493000000>; opp-microvolt = <600000>; };
+			opp41 { opp-hz = /bits/ 64 <467000000>; opp-microvolt = <593750>; };
+			opp42 { opp-hz = /bits/ 64 <441000000>; opp-microvolt = <587500>; };
+			opp43 { opp-hz = /bits/ 64 <415000000>; opp-microvolt = <581250>; };
+			opp44 { opp-hz = /bits/ 64 <390000000>; opp-microvolt = <575000>; };
+		};
+
+		gce0: mailbox@10228000 {
+			compatible = "mediatek,mt6789-gce";
+			reg = <0x10228000 0x4000>;
+			interrupts = <0x00 235 0x04 0x00>;
+			#mbox-cells = <0x02>;
+			clocks = <0x11 0x02>;		/* infracfg_ao CLK_IFRAO_GCE */
+			clock-names = "gce";
+		};
+
+		mmsys: syscon@14000000 {
 			compatible = "mediatek,mt6789-mmsys", "mediatek,mt8781-mmsys", "syscon";
 			reg = <0x14000000 0x1000>;
 			#clock-cells = <0x01>;
+		};
+
+		/* Minimal DRM/KMS driver reusing the LK-initialized pipeline */
+		display@14000000 {
+			compatible = "infinix,x676b-display";
+			reg = <0x14000000 0x14000>;
+			/* Scanout buffer lives where LK had its framebuffer, so the
+			 * display SMI window set up by LK covers it.
+			 */
+			memory-region = <&display_fb>;
+			status = "disabled";
+		};
+
+		/* ---- mainline mediatek-drm pipeline (X676B) ---- */
+		mutex: mutex@14001000 {
+			compatible = "mediatek,mt6789-disp-mutex";
+			reg = <0x14001000 0x1000>;
+			interrupts = <0x00 285 0x04 0x00>;
+			power-domains = <&spm 0x0a>;
+			clocks = <&mmsys 0x00>;		/* CLK_MM_DISP_MUTEX0 */
+			status = "okay";
+		};
+
+		ovl0: ovl@14005000 {
+			compatible = "mediatek,mt6789-disp-ovl";
+			reg = <0x14005000 0x1000>;
+			interrupts = <0x00 287 0x04 0x00>;
+			power-domains = <&spm 0x0a>;
+			clocks = <&mmsys 0x02>;		/* CLK_MM_DISP_OVL0 */
+			status = "okay";
+		};
+
+		rdma0: rdma@14007000 {
+			compatible = "mediatek,mt6789-disp-rdma";
+			reg = <0x14007000 0x1000>;
+			interrupts = <0x00 289 0x04 0x00>;
+			power-domains = <&spm 0x0a>;
+			clocks = <&mmsys 0x03>;		/* CLK_MM_DISP_RDMA0 */
+			mediatek,rdma-fifo-size = <48992>;
+			status = "okay";
+		};
+
+		dither0: dither@1400f000 {
+			compatible = "mediatek,mt6789-disp-dither";
+			reg = <0x1400f000 0x1000>;
+			interrupts = <0x00 297 0x04 0x00>;
+			power-domains = <&spm 0x0a>;
+			clocks = <&mmsys 0x0e>;		/* CLK_MM_DISP_DITHER0 */
+			status = "okay";
+
+			ports {
+				#address-cells = <0x01>;
+				#size-cells = <0x00>;
+
+				port@0 {
+					reg = <0x00>;
+					dither0_out: endpoint {
+						remote-endpoint = <&dsi0_in>;
+					};
+				};
+			};
+		};
+
+		mipi_tx0: dsi-phy@11f60000 {
+			compatible = "mediatek,mt6789-mipi-tx",
+			             "mediatek,mt8183-mipi-tx";
+			reg = <0x11f60000 0x1000>;
+			clocks = <0x0e>;		/* clk26m */
+			#clock-cells = <0x00>;
+			#phy-cells = <0x00>;
+			clock-output-names = "mipi_tx0_pll";
+			status = "okay";
+		};
+
+		dsi0: dsi@14013000 {
+			compatible = "mediatek,mt6789-dsi";
+			reg = <0x14013000 0x1000>;
+			interrupts = <0x00 301 0x04 0x00>;
+			power-domains = <&spm 0x0a>;
+			clocks = <&mmsys 0x10>,		/* CLK_MM_DSI0 */
+			         <&mmsys 0x15>,		/* CLK_MM_DSI0_DSI_CK_DOMAIN */
+			         <&mipi_tx0>;
+			clock-names = "engine", "digital", "hs";
+			phys = <&mipi_tx0>;
+			phy-names = "dphy";
+			#address-cells = <0x01>;
+			#size-cells = <0x00>;
+			status = "okay";
+
+			panel1: panel@0 {
+				compatible = "ilitek,ili7835";
+				reg = <0x00>;
+				reset-gpios = <&pio 0x55 0x00>;	/* pin 85 */
+				bias-gpios = <&pio 0x40 0x00>;	/* pin 64 */
+
+				port {
+					#address-cells = <0x01>;
+					#size-cells = <0x00>;
+
+					panel_in: endpoint@0 {
+						reg = <0x00>;
+						remote-endpoint = <&dsi0_out>;
+					};
+				};
+			};
+
+			ports {
+				#address-cells = <0x01>;
+				#size-cells = <0x00>;
+
+				port@0 {
+					#address-cells = <0x01>;
+					#size-cells = <0x00>;
+					reg = <0x00>;
+					dsi0_in: endpoint@0 {
+						reg = <0x00>;
+						remote-endpoint = <&dither0_out>;
+					};
+				};
+
+				port@1 {
+					#address-cells = <0x01>;
+					#size-cells = <0x00>;
+					reg = <0x01>;
+					dsi0_out: endpoint@0 {
+						reg = <0x00>;
+						remote-endpoint = <&panel_in>;
+					};
+				};
+			};
 		};
 
 		syscon@1101b000 {
@@ -778,13 +1115,13 @@
 			#clock-cells = <0x01>;
 		};
 
-		pinctrl {
+		pio: pinctrl {
 			compatible = "mediatek,mt6789-pinctrl", "mediatek,mt8781-pinctrl";
 			reg = <0x10005000 0x1000 0x11c30000 0x1000 0x11d10000 0x1000 0x11d40000 0x1000 0x11e20000 0x1000 0x11e60000 0x1000 0x11ea0000 0x1000 0x1000b000 0x1000>;
 			reg-names = "iocfg0", "iocfg_rb", "iocfg_bm", "iocfg_br", "iocfg_lm", "iocfg_bl", "iocfg_rt", "eint";
 			gpio-controller;
 			#gpio-cells = <0x02>;
-			gpio-ranges = <0x0d 0x00 0x00 0xbc>;
+			gpio-ranges = <&pio 0x00 0x00 0xbc>;
 
 			interrupt-controller;
 			#interrupt-cells = <0x02>;
@@ -959,6 +1296,29 @@
 				};
 			};
 
+			gps_pins_default: gps_default {
+			};
+
+			gps_l1_lna_pins_ol: gps_l1_lna@0 {
+				pins_cmd_dat {
+					output-low;
+					pinmux = <0x1900>;
+				};
+			};
+
+			gps_l1_lna_pins_dsp_ctrl: gps_l1_lna@1 {
+				pins_cmd_dat {
+					pinmux = <0x1902>;
+				};
+			};
+
+			gps_l1_lna_pins_oh: gps_l1_lna@2 {
+				pins_cmd_dat {
+					output-high;
+					pinmux = <0x1900>;
+				};
+			};
+
 			aud_gpio_i2s3_off: aud_gpio_i2s3_off {
 
 				pins_cmd1_dat {
@@ -1067,29 +1427,106 @@
 			#size-cells = <0x02>;
 			ranges;
 			status = "okay";
-			dr_mode = "peripheral";
+			/*
+			 * OTG: the role is switched at runtime through
+			 * /sys/class/usb_role/11200000.usb0-role-switch/role.
+			 * A userland helper watches the ID GPIO (69) and enables
+			 * the RT9471 OTG boost + GPIO26 only in host mode.
+			 */
+			dr_mode = "otg";
 			maximum-speed = "high-speed";
 		};
 
 		t-phy@11f40000 {
 			compatible = "mediatek,mt6789-tphy", "mediatek,generic-tphy-v2";
-			#address-cells = <0x01>;
-			#size-cells = <0x01>;
-			ranges = <0x00 0x00 0x11f40000 0x1000>;
+			#address-cells = <0x02>;
+			#size-cells = <0x02>;
+			/*
+			 * Identity mapping: the U2 PHY child's reg is absolute
+			 * (0x11f40000, size 0x700).  With the old relative
+			 * "<0 0x700>" the driver programmed 0x11f407xx, so
+			 * PHY_MODE_USB_HOST never reached the real IDDIG bits.
+			 */
+			ranges;
 			status = "okay";
 
-			usb-phy@0 {
-				reg = <0x00 0x700>;
+			usb-phy@11f40000 {
+				reg = <0x00 0x11f40000 0x00 0x700>;
 				clocks = <0x0e>;
 				clock-names = "ref";
 				#phy-cells = <0x01>;
 				status = "okay";
-				mediatek,eye-src = <0x04>;
 				mediatek,eye-vrt = <0x04>;
 				mediatek,eye-term = <0x04>;
+				mediatek,rev4 = <0x01>;
+				mediatek,rx_sqth = <0x05>;
 				mediatek,discth = <0x07>;
 				phandle = <0x0f>;
 			};
+		};
+
+		/* Wi-Fi/BT/FM/GPS connectivity (CONNAC2 + MT6631 A-die).
+		 * Registers, interrupts and EMI properties are taken from the
+		 * stock DT; supplies and the PD are wired to mainline nodes.
+		 */
+		/* Wi-Fi MAC/WFDMA (CONNAC2). Used by the gen4m WLAN driver,
+		 * which downloads its own firmware and does not need WMT.
+		 */
+		wifi: wifi@18000000 {
+			compatible = "mediatek,wifi";
+			reg = <0x18000000 0x100000>;
+			interrupts = <0x00 0x199 0x04 0x00>;
+			memory-region = <&wifi_emi>;
+			emi-addr = <0x7d000000>;
+			emi-size = <0x600000>;
+			emi-alignment = <0x1000000>;
+			emi-max-addr = <0xc0000000>;
+		};
+
+		btif: btif@1100c000 {
+			compatible = "mediatek,btif";
+			reg = <0x1100c000 0x1000>,
+			      <0x10217b00 0x80>,
+			      <0x10217b80 0x80>;
+			interrupts = <0x00 0xbe 0x04 0x00>,
+				     <0x00 0xb8 0x04 0x00>,
+				     <0x00 0xb9 0x04 0x00>;
+			clocks = <0x11 18>, <0x11 61>;
+			clock-names = "btifc", "apdmac";
+		};
+
+		consys: consys@18002000 {
+			compatible = "mediatek,mt6789-consys";
+			#thermal-sensor-cells = <0x00>;
+			reg = <0x18002000 0x1000>,
+			      <0x10007000 0x100>,
+			      <0x10001000 0x1000>,
+			      <0x10006000 0x1000>,
+			      <0x18007000 0x1000>,
+			      <0x180b1000 0x1000>,
+			      <0x180a3000 0x1000>,
+			      <0x180a5000 0x800>,
+			      <0x180c1000 0x1000>,
+			      <0x18004000 0x1000>,
+			      <0x1024c000 0x40>,
+			      <0x10003000 0x1000>;
+			interrupts = <0x00 0x19a 0x04 0x00>,
+				     <0x00 0x6f 0x04 0x00>,
+				     <0x00 0x19b 0x04 0x00>;
+			clocks = <0x11 0x38>;
+			clock-names = "ccif";
+			power-domains = <&spm 0x01>;
+			pmic = <&pmic>;
+			emi-addr = <0x00>;
+			emi-size = <0x600000>;
+			emi-alignment = <0x1000000>;
+			emi-max-addr = <0x80000000>;
+			memory-region = <&consys_emi>;
+			vcn18-supply = <&vcn18>;
+			vcn28-supply = <&vcn28>;
+			vcn33_bt-supply = <&vcn33>;
+			vcn33_wifi-supply = <&vcn33>;
+			status = "okay";
 		};
 
 		mmc@11240000 {
@@ -1321,6 +1758,7 @@ ufshci@11270000 {
 
 	simple-framebuffer@feabe000 {
 		compatible = "simple-framebuffer";
+		status = "disabled";
 		reg = <0x00 0xfeabe000 0x00 0x9e6000>;
 		width = <0x438>;
 		height = <0x960>;
@@ -1336,13 +1774,20 @@ ufshci@11270000 {
 		#size-cells = <0x02>;
 		ranges;
 
-		wifi@bf000000 {
+		/*
+		 * HIF/PDMA coherent pool for the WLAN driver.  The CONNSYS MCU
+		 * can only reach this fixed window, and the stock Android kernel
+		 * creates the very same 6 MiB DMA pool at 0xbf000000.
+		 */
+		wifi_emi: wifi@bf000000 {
+			compatible = "shared-dma-pool";
 			reg = <0x00 0xbf000000 0x00 0x600000>;
 			no-map;
 		};
 
-		consys_emi@7d000000 {
-			reg = <0x00 0x7d000000 0x00 0x500000>;
+		consys_emi: consys-emi@7d000000 {
+			compatible = "shared-dma-pool";
+			reg = <0x00 0x7d000000 0x00 0x600000>;
 			no-map;
 		};
 
@@ -1422,8 +1867,18 @@ ufshci@11270000 {
 			no-map;
 		};
 
-		framebuffer@fe0c8000 {
-			reg = <0x00 0xfe0c8000 0x00 0x1f2f000>;
+		/*
+		 * LK display memory: three 1088x2400x4 buffers, the middle one
+		 * (display-fb) is what LK scans out and what we keep scanning.
+		 */
+		lkfb0@fe0c8000 {
+			reg = <0x00 0xfe0c8000 0x00 0x9f6000>;
+			no-map;
+		};
+
+		display_fb: display-fb@feabe000 {
+			compatible = "shared-dma-pool";
+			reg = <0x00 0xfeabe000 0x00 0x1539000>;
 			no-map;
 		};
 
