@@ -895,8 +895,22 @@ static const struct mtk_mutex_data mt8365_mutex_driver_data = {
 
 struct mtk_mutex *mtk_mutex_get(struct device *dev)
 {
-	struct mtk_mutex_ctx *mtx = dev_get_drvdata(dev);
+	struct mtk_mutex_ctx *mtx;
 	int i;
+
+	/*
+	 * mtk_drm_bind() can run before the mtk-mutex device has been probed:
+	 * of_find_device_by_node() only guarantees that the platform device
+	 * exists, not that drvdata is set. Dereferencing NULL here panicked
+	 * the board on some boots (ramoops: mtk_mutex_get -> mtk_crtc_create
+	 * -> mtk_drm_bind). Ask for a deferred probe instead.
+	 */
+	if (!dev)
+		return ERR_PTR(-EPROBE_DEFER);
+
+	mtx = dev_get_drvdata(dev);
+	if (!mtx)
+		return ERR_PTR(-EPROBE_DEFER);
 
 	for (i = 0; i < MTK_MUTEX_MAX_HANDLES; i++)
 		if (!mtx->mutex[i].claimed) {
