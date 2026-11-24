@@ -4,42 +4,77 @@ Fork of [ellyq/mtk_g99-mainline](https://gitlab.postmarketos.org/ellyq/mtk_g99-m
 with support for the **Infinix Note 12 Pro (X676B)** added.
 
 Device: MT6789 (Helio G99), 8 GiB RAM, 256 GiB UFS, 1080x2400 AMOLED.
-Bootloader: U-Boot packed into the stock LK partition (see the separate
-`u-boot-mtk-g99` / `x676b_tools_linux` work). Root filesystem: Arch Linux ARM
-on a UFS partition, systemd.
+Bootloader: U-Boot packed into the stock LK partition (separate tree,
+`u-boot-mtk-g99` / `x676b_tools_linux`). Root filesystem: a Linux
+distribution on a UFS partition.
 
 ## Status (tested on hardware)
 
 ### Works
 
-| Subsystem | Notes |
+| Kernel capability | Notes |
 |---|---|
-| Boot | Arch Linux ARM on UFS (`sdc63`), systemd; Alpine on `sdc62` as fallback |
-| RAM | full 8 GiB visible and usable (two banks) |
-| USB | Type-C composite gadget: ACM console + RNDIS network (SSH) |
-| Storage | UFS read/write (root filesystem) |
-| SD card | MSDC1: 128 GiB SDXC, 50 MHz / 4-bit / 3.3 V, card-detect hotplug (insert and remove) |
+| Boot from UFS | root filesystem on a UFS partition (`root=PARTUUID=...`); a second UFS partition works as an alternative root |
+| RAM | full 8 GiB across two banks |
+| UFS | block device, read/write |
+| SD card (MSDC1) | `mmc0`: SDXC, 50 MHz / 4-bit, card-detect hotplug (insert and remove) |
+| USB | Type-C composite gadget (ACM console + RNDIS) and OTG host with role switch |
 | PMIC | MT6366 via pwrap: regulators, RTC, power/reset keys, ADC |
-| CPU frequency | 2 clusters (6x A55 up to 2.0 GHz, 2x A76 up to 2.2 GHz), schedutil |
+| Charger / battery | RT9471 charger driver: status, current/voltage limits, BC1.2, OTG boost; `mt6358_battery` (voltage + OCV estimate) |
+| CPU frequency | two clusters: 6x A55 up to 2.0 GHz, 2x A76 up to 2.2 GHz, schedutil |
 | Thermal | MT6789 LVTS, 13 zones, 110 C critical trips |
-| Display | mainline `mediatek-drm` + `mtk_dsi` + new `panel-ilitek-ili7835` driver: fbcon on the 1080x2400 AMOLED, RDMA memory mode, 33 ms command-mode tick (30 fps), CPU cost ~14% of one core |
-| Audio | MT6789 AFE + MT6358 codec; playback to the bottom speaker via the LoudSPK path, volume through `Lineout Volume`; works after reboot |
-| Charger | Richtek RT9470D via the `rt9471` driver: status, current/voltage limits, BC1.2, OTG boost |
-| Battery | `mt6358_battery` (v1): voltage + OCV capacity estimate, status from the charger |
-| Clock / reset | MT6789 CCU, fixed out-of-bounds in `infra_ao` reset offsets |
-| GPU | Panfrost binds the Mali-G57 (`13000000.gpu`) and registers a DRM node; GL/EGL userspace not tested yet |
+| Display | `mediatek-drm` + `mtk_dsi` + `panel-ilitek-ili7835`: 1080x2400 AMOLED, command mode, RDMA memory mode, 33 ms tick (~30 fps); fbdev emulation on `/dev/fb0` |
+| GPU | Panfrost binds Mali-G57 MC2: GLES 3.1 feature set, ~135 GFLOPS FP32 at 1.1 GHz; no Vulkan (PanVK does not support this GPU) |
+| Audio | MT6789 AFE + MT6358/MT6366 codec: playback to the bottom speaker (LoudSPK path) |
+| Wi-Fi | CONNSYS MT6631 with the ported gen4m driver: scan on 2.4/5 GHz, WPA2-PSK/SAE, ~48 Mbit/s |
+| Bluetooth | `hci_stp` (HCI over WMT/STP): BR/EDR and LE, pairing, RFCOMM/L2CAP sockets |
+| FM radio | MT6631 tuner via WMT/STP: power-up, tuning, RSSI, band scan |
+| GNSS | `gps_stp` STP transport (L1): NMEA at 1 Hz, satellites and C/N0 visible |
+| KASAN | the tree doubles as a KASAN bring-up target: several real bugs were found and fixed here (see "Bugs found with KASAN") |
 
-### Not working
+### Partial / not working
 
-| Subsystem | Notes |
+| Kernel capability | Notes |
 |---|---|
-| Top (earpiece) speaker | only the bottom speaker plays; the second amp path (RCV or a digital amp on I2S3) is not wired up yet |
-| Amp I2C control | the speaker amp (RT5512/FS1559 at `i2c6 0x5c`) and gate IC (`0x11`) do not ACK; audio works in analog passthrough |
-| Battery gauge | no FGADC driver: no current, no coulomb counter; `voltage_now` currently reports `-110` (open regression) |
-| Wi-Fi / Bluetooth | on-SoC CONNSYS, vendor 5.10 driver only; the vendor modules are blacklisted on this device (unloading `wlan_gen4m` crashes the kernel) |
-| Modem | vendor stack only |
+| Top (earpiece) speaker | only the bottom speaker path is wired up |
+| Speaker amp I2C | RT5512/FS1559 at `i2c6 0x5c` and the gate IC `0x11` do not ACK; audio works in analog passthrough |
+| Battery gauge | no FGADC driver: no current or coulomb counter, capacity is a voltage/OCV estimate |
+| Modem | vendor-only stack, not started from mainline |
 | Camera | no driver |
+| Touchscreen / local input | no driver yet |
 | cpuidle / suspend | not implemented, not tested |
+| FM / BT audio | audio routing for those profiles is missing |
+| 60 Hz display | the 1006 Mbit/s D-PHY link has no margin for a 16.6 ms frame |
+
+## Where the numbers and register values come from
+
+Every constant in this tree has a traceable origin; none of it was invented:
+
+* **Disassembly of the stock bootloader.** The `lk_a` partition was dumped
+  from the device and disassembled (Ghidra and an in-house REA toolchain).
+  The DSI command sequences, OVL/RDMA/mutex programming, the panel init
+  table, EMI MPU encoding and the display clock/power gates come from that
+  code.
+* **Disassembly of the ATF/TEE image.** The `tee_a` dump was analysed for
+  the EMI MPU register encoding, the SMC entry points and the secure power
+  domain handling.
+* **A live Android system on the same phone.** Registers, clocks, power
+  domains, DSI state and the Wi-Fi/BT/FM/GPS bring-up were read and
+  cross-checked on the running stock firmware (sysfs, debugfs, `/proc`,
+  logcat, WMT/connsys logs), and used as the reference behaviour.
+* **Vendor kernel sources (MediaTek BSP 5.10).** Driver behaviour and data
+  tables were ported from the public MT6789 downstream trees: MMSYS
+  routing, pm-domains, clocks, AFE, LVTS, CONNSYS/WMT, gen4m, fmradio and
+  the GPS STP transport.
+* **Device dumps.** DTB/DTBO from `vendor_boot`, firmware images from
+  `/vendor/firmware` and partition dumps give the device-specific nodes,
+  firmware blobs and the reserved-memory layout.
+* **Upstream mainline.** Base drivers, DT bindings and subsystem APIs come
+  from mainline; where MT6789-specific data was missing it was filled in
+  from the sources above.
+* **Measurements on this board.** Timing and performance numbers (30 fps
+  tick, 5.7 ms frame conversion, 135 GFLOPS, 48 Mbit/s, thermal behaviour)
+  were measured on the device, not taken from a datasheet.
 
 ## Device tree and DTB
 
@@ -98,8 +133,6 @@ known limitations (60 Hz does not fit the 1006 Mbit/s D-PHY link yet).
   insertion and removal are hotplug events.
 * A single `mmc0: error -84 whilst initialising SD card` at boot is the first
   CMD8 attempt; the retry succeeds and the card enumerates normally.
-* The same slot is still not usable from U-Boot; the Linux bring-up does not
-  depend on it (DTS commit `0611a4104`).
 
 ## Building
 
@@ -141,6 +174,24 @@ Important configuration choices for this device:
 * **DTS**: Infinix X676B device nodes, reserved-memory (`ranges;`),
   `display-fb` DMA pool for the scanout buffer, GPIO hogs for the speaker
   amp power/enable, prebuilt DTB.
+* **Connectivity**: out-of-tree ports of the vendor CONNSYS stack used by
+  this device — WMT/STP, BTIF, gen4m Wi-Fi, `hci_stp` (HCI over STP) and
+  `gps_stp` — plus the vendor `mnld`/fmradio userspace.
+
+## Bugs found with KASAN
+
+* **Display command-mode tick deadlock.** `cancel_delayed_work_sync()` in
+  `atomic_disable()` against the tick that takes `plane->mutex`: any
+  `fb_blank` (console blanking or a fbdev client) froze a process in D
+  state. The tick
+  now stops with a flag and a non-blocking cancel.
+* **`mtk-mutex` NULL dereference.** `of_find_device_by_node()` returns the
+  platform device before its driver probes, so `dev_get_drvdata()` could be
+  NULL during `mtk_drm_bind()`; an intermittent boot panic. Now
+  `-EPROBE_DEFER` until the data is there.
+* **`pinctrl-mt6789` out-of-bounds read.** `mt6789_pull_type[]` had 188
+  entries for 222 pins, so `mtk_pinconf_bias_get_combo()` read past the
+  array for GPIO188..221. The table is complete now.
 
 ## Documentation
 
@@ -151,9 +202,9 @@ Important configuration choices for this device:
 * `Documentation/sound/mediatek/mt6789-x676b-refs/` — RT5512 LKML patch and
   the DS5512B datasheet.
 
-The wider project notes (display bring-up, U-Boot, USB, storage, every
-workaround with its rationale) live outside this kernel tree in
-`docs/AGENTS/` and `docs/hacks/`.
+The wider project notes (display bring-up, USB, storage, every workaround
+with its rationale) live outside this kernel tree in `docs/AGENTS/` and
+`docs/hacks/`.
 
 ## Sources and credits
 

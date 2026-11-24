@@ -9,6 +9,43 @@ This kernel tree carries the device support for the Infinix X676B
 describes what the kernel side provides: device trees, drivers and
 driver-specific parameters.  It is not a project log.
 
+Status at a glance
+==================
+
+Working on hardware: boot from a UFS root partition, 8 GiB RAM, UFS and
+SD (MSDC1) block devices, USB composite gadget and OTG host, PMIC,
+charger and battery monitor, keys, CPU frequency and thermal, the
+ILI7835 panel through ``mediatek-drm`` with fbdev emulation (~30 fps
+command-mode tick), audio playback to the bottom speaker, Panfrost
+GLES 3.1, Wi-Fi (2.4/5 GHz), Bluetooth BR/EDR + LE, the MT6631 FM tuner
+(tuning/RSSI) and the GNSS STP transport (NMEA output; positional
+accuracy is limited by regional spoofing).
+
+Not working or not wired yet: top speaker, I2C control of the speaker
+amplifier, battery fuel gauge, modem, camera, touchscreen/local input,
+cpuidle/suspend, FM/BT audio profiles, 60 Hz display.
+
+Where the constants come from
+=============================
+
+Register values, tables and timings in this tree have traceable sources:
+
+* stock bootloader (``lk_a``) disassembly — DSI command sequences,
+  OVL/RDMA/mutex programming, panel init, EMI MPU, display clock and
+  power gates;
+* ATF/TEE (``tee_a``) disassembly — EMI MPU encoding, SMC entry points,
+  secure power-domain handling;
+* a live Android system on the same phone — registers, clocks, power
+  domains and the connectivity bring-up read through sysfs/debugfs,
+  ``/proc``, logcat and the WMT/connsys logs;
+* vendor kernel sources (MediaTek BSP 5.10) — MMSYS routing, pm-domains,
+  clocks, AFE, LVTS, CONNSYS/WMT, gen4m, fmradio, GPS STP;
+* device dumps — DTB/DTBO from ``vendor_boot``, ``/vendor/firmware`` and
+  partition images;
+* upstream mainline — base drivers, DT bindings and subsystem APIs;
+* measurements on the board — frame timings, CPU cost, GPU and network
+  throughput, thermal behaviour.
+
 Device tree
 ===========
 
@@ -102,10 +139,12 @@ Building
 
     make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j12 Image modules
 
-There are two configurations in use: a regular one and a debug one
-(``CONFIG_KASAN``/``CONFIG_KGDB``/``CONFIG_DEBUG_INFO_DWARF5``).
-The two produce incompatible ``struct module`` layouts, so load only
-modules built with the same configuration as the running kernel.
+Two configurations are used: a regular one and a debug one
+(``CONFIG_KASAN``, ``CONFIG_DEBUG_INFO_DWARF5``).  They produce
+incompatible ``struct module`` layouts, so load only modules built with
+the same configuration as the running kernel (``modprobe`` errors with
+"section size must match" otherwise).  The KASAN configuration is the
+one used for bring-up on this device.
 
 Known limitations
 =================
