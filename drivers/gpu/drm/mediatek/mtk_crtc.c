@@ -256,11 +256,20 @@ mtk_crtc_cmd_mode_get_fb(struct mtk_crtc *mtk_crtc, dma_addr_t *addr)
 	struct drm_framebuffer *fb = NULL;
 
 	drm_modeset_lock(&plane->mutex, NULL);
+	/*
+	 * The CRTC may have been disabled while this work was waiting for
+	 * the plane lock: atomic_disable() holds it until commit_tail
+	 * returns. Touching the pipeline after power-off wedges the DSI
+	 * FSM, so bail out instead.
+	 */
+	if (!mtk_crtc->enabled)
+		goto out;
 	if (plane->state && plane->state->fb) {
 		fb = plane->state->fb;
 		*addr = drm_fb_dma_get_gem_addr(fb, plane->state, 0);
 		drm_framebuffer_get(fb);
 	}
+out:
 	drm_modeset_unlock(&plane->mutex);
 
 	return fb;
@@ -283,6 +292,11 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 		goto resched;
 
 	fb = mtk_crtc_cmd_mode_get_fb(mtk_crtc, &addr);
+	if (!mtk_crtc->enabled) {
+		if (fb)
+			drm_framebuffer_put(fb);
+		return;
+	}
 
 	/*
 	 * This is the vblank callback the hardware would normally call: it
@@ -366,8 +380,9 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	mtk_ddp_comp_trigger(mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1]);
 
 resched:
-	schedule_delayed_work(&mtk_crtc->cmd_mode_work,
-			      msecs_to_jiffies(cmd_period_ms));
+	if (mtk_crtc->enabled)
+		schedule_delayed_work(&mtk_crtc->cmd_mode_work,
+				      msecs_to_jiffies(cmd_period_ms));
 }
 
 static void mtk_crtc_destroy(struct drm_crtc *crtc)
@@ -1070,7 +1085,16 @@ static void mtk_crtc_atomic_disable(struct drm_crtc *crtc,
 	if (!mtk_crtc->enabled)
 		return;
 
-	cancel_delayed_work_sync(&mtk_crtc->cmd_mode_work);
+	/*
+	 * Do NOT cancel_delayed_work_sync() here: the tick takes the plane
+	 * lock, and the atomic commit that called us holds it until
+	 * commit_tail returns - waiting for the work would deadlock
+	 * (reproduced by Xorg: fb_blank -> dpms off -> crtc disable, Xorg
+	 * stuck forever in D state). Clear ->enabled first, stop re-arming,
+	 * and let a work instance already waiting on the lock bail out.
+	 */
+	mtk_crtc->enabled = false;
+	cancel_delayed_work(&mtk_crtc->cmd_mode_work);
 
 	/* Set all pending plane state to disabled */
 	for (i = 0; i < mtk_crtc->layer_nr; i++) {
