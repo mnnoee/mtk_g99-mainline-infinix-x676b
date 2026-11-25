@@ -718,7 +718,13 @@ static int mtk_drm_bind(struct device *dev)
 	if (ret < 0)
 		goto err_deinit;
 
-	drm_client_setup(drm, NULL);
+	/*
+	 * Ask the generic client (fbdev) for a packed RGB888 buffer: the DSI
+	 * sends 24 bpp and the RDMA can read RGB888 directly, so choosing
+	 * 24 bpp here lets the command-mode path hand the framebuffer to the
+	 * hardware without any software conversion.
+	 */
+	drm_client_setup(drm, drm_format_info(DRM_FORMAT_RGB888));
 
 	return 0;
 

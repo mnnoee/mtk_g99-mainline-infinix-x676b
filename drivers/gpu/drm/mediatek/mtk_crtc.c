@@ -84,8 +84,14 @@ struct mtk_crtc {
 	struct delayed_work		cmd_mode_work;
 	dma_addr_t			cmd_fb_addr;
 	unsigned int			cmd_fb_pitch;
-	void				*cmd_conv_buf;
-	dma_addr_t			cmd_conv_dma;
+	/*
+	 * Two packed RGB888 frames, used alternately: the DSI reads frame N
+	 * from one buffer while the CPU converts frame N+1 into the other,
+	 * so the conversion no longer adds to the frame period.
+	 */
+	void				*cmd_conv_buf[2];
+	dma_addr_t			cmd_conv_dma[2];
+	unsigned int			cmd_conv_idx;
 };
 
 struct mtk_crtc_state {
@@ -203,18 +209,18 @@ static void mtk_crtc_cmd_mode_convert_neon(u8 *dst, const u8 *src,
 }
 
 static void mtk_crtc_cmd_mode_convert(struct mtk_crtc *mtk_crtc,
-				      struct drm_framebuffer *fb)
+				      struct drm_framebuffer *fb, void *dst_buf)
 {
 	struct drm_gem_dma_object *obj = drm_fb_dma_get_gem_obj(fb, 0);
 	const u8 *src;
 
-	if (!mtk_crtc->cmd_conv_buf || !obj || !obj->vaddr)
+	if (!dst_buf || !obj || !obj->vaddr)
 		return;
 
 	src = (const u8 *)obj->vaddr + fb->offsets[0];
 
 	if (may_use_simd()) {
-		mtk_crtc_cmd_mode_convert_neon(mtk_crtc->cmd_conv_buf, src,
+		mtk_crtc_cmd_mode_convert_neon(dst_buf, src,
 					       fb->width, fb->height,
 					       fb->pitches[0]);
 		return;
@@ -234,7 +240,7 @@ static void mtk_crtc_cmd_mode_convert(struct mtk_crtc *mtk_crtc,
 		dst_pitch[0] = fb->width * 3;
 
 		iosys_map_set_vaddr(&srcmap, (void *)src);
-		iosys_map_set_vaddr(&dst, mtk_crtc->cmd_conv_buf);
+		iosys_map_set_vaddr(&dst, dst_buf);
 
 		drm_fb_xrgb8888_to_rgb888(&dst, dst_pitch, &srcmap, fb, &clip,
 					  &fmtcnv_state);
@@ -282,6 +288,8 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	struct drm_framebuffer *fb;
 	dma_addr_t addr;
 	bool need_config = false;
+	ktime_t tick_start = ktime_get();
+	unsigned int buf_idx;
 	int i;
 
 	if (!mtk_crtc->enabled)
@@ -328,30 +336,68 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 		mtk_drm_finish_page_flip(mtk_crtc);
 
 	if (!cmd_memory_mode && fb && addr != mtk_crtc->cmd_fb_addr) {
+		/*
+		 * Direct path: the OVL samples the buffer userspace rendered
+		 * (ARGB8888) and converts it to RGB888 in hardware on the way
+		 * to the DSI, exactly like the vendor pipeline does.  Nothing
+		 * is copied or converted in software.
+		 *
+		 * Mark the plane state dirty so the regular OVL/RDMA layer
+		 * configuration picks up the new address, then let
+		 * mtk_crtc_ddp_irq() below program the pipeline.
+		 */
+		struct drm_plane *plane = &mtk_crtc->planes[0];
+
+		drm_modeset_lock(&plane->mutex, NULL);
+		if (plane->state) {
+			to_mtk_plane_state(plane->state)->pending.config = true;
+			mtk_crtc->pending_planes = true;
+		}
+		drm_modeset_unlock(&plane->mutex);
+
+		mtk_crtc->cmd_fb_addr = addr;
+		need_config = true;
+	}
+
+	if (cmd_memory_mode && fb &&
+	    (fb->format->format == DRM_FORMAT_RGB888 ||
+	     fb->format->format == DRM_FORMAT_BGR888)) {
+		/*
+		 * The framebuffer is already packed 24 bpp, which is exactly
+		 * what the DSI sends: give the buffer to the RDMA as-is and
+		 * skip the software conversion entirely.
+		 */
+		dma_sync_single_for_device(mtk_crtc->base.dev->dev, addr,
+					   fb->pitches[0] * fb->height,
+					   DMA_TO_DEVICE);
 		for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
 			struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
 
-			if (comp->funcs && comp->funcs->scanout_config) {
-				comp->funcs->scanout_config(comp->dev, addr,
-							    fb->pitches[0],
-							    fb->width, fb->height);
+			if (comp->funcs && comp->funcs->mem_config) {
+				comp->funcs->mem_config(comp->dev, addr,
+							fb->pitches[0],
+							fb->format->format);
 				break;
 			}
 		}
-		mtk_crtc->cmd_fb_addr = addr;
-	}
-
-	if (cmd_memory_mode && fb && mtk_crtc->cmd_conv_buf) {
-		mtk_crtc_cmd_mode_convert(mtk_crtc, fb);
+	} else if (cmd_memory_mode && fb && mtk_crtc->cmd_conv_buf[0]) {
+		/*
+		 * Alternate the buffers: the previous frame is still being
+		 * clocked out of the other one by the DSI.
+		 */
+		buf_idx = mtk_crtc->cmd_conv_idx;
+		mtk_crtc->cmd_conv_idx ^= 1;
+		mtk_crtc_cmd_mode_convert(mtk_crtc, fb,
+					  mtk_crtc->cmd_conv_buf[buf_idx]);
 		dma_sync_single_for_device(mtk_crtc->base.dev->dev,
-					   mtk_crtc->cmd_conv_dma,
+					   mtk_crtc->cmd_conv_dma[buf_idx],
 					   1080 * 2400 * 3, DMA_TO_DEVICE);
 		for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
 			struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
 
 			if (comp->funcs && comp->funcs->mem_config) {
 				comp->funcs->mem_config(comp->dev,
-							mtk_crtc->cmd_conv_dma,
+							mtk_crtc->cmd_conv_dma[buf_idx],
 							fb->width * 3,
 							DRM_FORMAT_RGB888);
 				break;
@@ -380,9 +426,20 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	mtk_ddp_comp_trigger(mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1]);
 
 resched:
-	if (mtk_crtc->enabled)
+	if (mtk_crtc->enabled) {
+		/*
+		 * Keep a fixed grid: the next frame starts cmd_period_ms after
+		 * this one did, not cmd_period_ms after the work finished.
+		 * Otherwise the conversion time is added to every period and a
+		 * 60 Hz panel ends up at ~40 fps.
+		 */
+		unsigned int elapsed_ms = ktime_ms_delta(ktime_get(), tick_start);
+		unsigned int delay_ms = cmd_period_ms > elapsed_ms ?
+					cmd_period_ms - elapsed_ms : 1;
+
 		schedule_delayed_work(&mtk_crtc->cmd_mode_work,
-				      msecs_to_jiffies(cmd_period_ms));
+				      msecs_to_jiffies(delay_ms));
+	}
 }
 
 static void mtk_crtc_destroy(struct drm_crtc *crtc)
@@ -391,11 +448,13 @@ static void mtk_crtc_destroy(struct drm_crtc *crtc)
 	int i;
 
 	cancel_delayed_work_sync(&mtk_crtc->cmd_mode_work);
-	if (mtk_crtc->cmd_conv_buf)
-		dma_free_noncoherent(crtc->dev->dev, 1080 * 2400 * 3,
-				     mtk_crtc->cmd_conv_buf,
-				     mtk_crtc->cmd_conv_dma,
-				     DMA_TO_DEVICE);
+	for (i = 0; i < ARRAY_SIZE(mtk_crtc->cmd_conv_buf); i++) {
+		if (mtk_crtc->cmd_conv_buf[i])
+			dma_free_noncoherent(crtc->dev->dev, 1080 * 2400 * 3,
+					     mtk_crtc->cmd_conv_buf[i],
+					     mtk_crtc->cmd_conv_dma[i],
+					     DMA_TO_DEVICE);
+	}
 	mtk_mutex_put(mtk_crtc->mutex);
 #if IS_REACHABLE(CONFIG_MTK_CMDQ)
 	if (mtk_crtc->cmdq_client.chan) {
@@ -687,8 +746,19 @@ static int mtk_crtc_ddp_hw_init(struct mtk_crtc *mtk_crtc)
 
 		plane_state = to_mtk_plane_state(plane->state);
 
-		/* should not enable layer before crtc enabled */
-		plane_state->pending.enable = false;
+		/*
+		 * Memory mode programs the RDMA buffer separately, so the OVL
+		 * layers stay off until the command-mode tick feeds them.
+		 *
+		 * The direct path is different: the DSI is enabled right after
+		 * this function, and switching it into command mode waits for
+		 * the first frame.  With no OVL layer enabled the pipeline never
+		 * produces one, the switch times out and the DSI FSM stays in
+		 * BUSY.  So keep the layers enabled here, the way the vendor
+		 * pipeline has them when the DSI comes up.
+		 */
+		if (cmd_memory_mode)
+			plane_state->pending.enable = false;
 		comp = mtk_ddp_comp_for_plane(crtc, plane, &local_layer);
 		if (comp)
 			mtk_ddp_comp_layer_config(comp, local_layer,
@@ -1346,10 +1416,12 @@ int mtk_crtc_create(struct drm_device *drm_dev, const unsigned int *path,
 	 * 30 fps; the cacheable buffer makes the conversion cheap and the
 	 * one dma_sync per frame cleans the lines for the RDMA engine.
 	 */
-	mtk_crtc->cmd_conv_buf = dma_alloc_noncoherent(dev, 1080 * 2400 * 3,
-						      &mtk_crtc->cmd_conv_dma,
-						      DMA_TO_DEVICE,
-						      GFP_KERNEL);
+	for (i = 0; i < ARRAY_SIZE(mtk_crtc->cmd_conv_buf); i++) {
+		mtk_crtc->cmd_conv_buf[i] =
+			dma_alloc_noncoherent(dev, 1080 * 2400 * 3,
+					      &mtk_crtc->cmd_conv_dma[i],
+					      DMA_TO_DEVICE, GFP_KERNEL);
+	}
 	INIT_DELAYED_WORK(&mtk_crtc->cmd_mode_work, mtk_crtc_cmd_mode_work);
 	mtk_crtc->ddp_comp = devm_kcalloc(dev,
 					  mtk_crtc->ddp_comp_nr + (conn_routes ? 1 : 0),
