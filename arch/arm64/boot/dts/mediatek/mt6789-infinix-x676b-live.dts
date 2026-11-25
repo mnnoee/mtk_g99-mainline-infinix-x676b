@@ -1040,6 +1040,14 @@
 			clock-names = "engine", "digital", "hs";
 			phys = <&mipi_tx0>;
 			phy-names = "dphy";
+			/*
+			 * The vendor runs this panel at 1120 Mbit/s per lane
+			 * (4 lanes).  It does not follow from the 167.67 MHz
+			 * mode clock: in command mode the RDMA feeds the DSI
+			 * as fast as the link allows, and 15.5 ms per frame
+			 * (the derived 1006 Mbit/s) leaves no room for 60 Hz.
+			 */
+			mediatek,data-rate-mbps = <1120>;
 			#address-cells = <0x01>;
 			#size-cells = <0x00>;
 			status = "okay";

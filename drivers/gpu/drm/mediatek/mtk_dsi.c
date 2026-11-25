@@ -32,6 +32,17 @@
 #include "mtk_disp_drv.h"
 #include "mtk_drm_drv.h"
 
+/*
+ * Link rate override for command-mode panels whose rate does not follow from
+ * the mode clock (the vendor runs this panel at 1120 Mbit/s per lane).  Same
+ * meaning as the "mediatek,data-rate-mbps" device tree property, but usable
+ * without rebuilding the DTB.
+ */
+static unsigned int dsi_data_rate_mbps;
+module_param(dsi_data_rate_mbps, uint, 0644);
+MODULE_PARM_DESC(dsi_data_rate_mbps, "Override the DSI link rate in Mbit/s per lane");
+
+
 #define DSI_START		0x00
 
 #define DSI_INTEN		0x08
@@ -216,6 +227,7 @@ struct mtk_dsi {
 	struct clk *hs_clk;
 
 	u32 data_rate;
+	u32 data_rate_mbps;
 
 	unsigned long mode_flags;
 	enum mipi_dsi_pixel_format format;
@@ -699,8 +711,18 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	}
 	bit_per_pixel = ret;
 
-	dsi->data_rate = DIV_ROUND_UP_ULL(dsi->vm.pixelclock * bit_per_pixel,
-					  dsi->lanes);
+	/*
+	 * The vendor runs this panel at 1120 Mbit/s per lane, which does not
+	 * follow from the mode clock: command-mode panels are not streamed at
+	 * the pixel clock, the RDMA feeds the DSI as fast as the link allows.
+	 * Allow the device tree to state the rate explicitly, otherwise derive
+	 * it from the mode as before.
+	 */
+	if (dsi->data_rate_mbps)
+		dsi->data_rate = dsi->data_rate_mbps * 1000000ULL;
+	else
+		dsi->data_rate = DIV_ROUND_UP_ULL(dsi->vm.pixelclock * bit_per_pixel,
+						  dsi->lanes);
 
 	ret = clk_set_rate(dsi->hs_clk, dsi->data_rate);
 	if (ret < 0) {
@@ -942,6 +964,19 @@ void mtk_dsi_ddp_stop(struct device *dev)
  * The raw CMDQ word matches what the vendor driver uses in its
  * "frame trigger mode": data_id 0x2c, data type 0x39, config 0x09.
  */
+/*
+ * True while the controller is still clocking out a frame.  Command-mode
+ * users must not reprogram the RDMA (or restart the transfer) in that
+ * window: the frame would switch buffers mid-stream and the picture jumps
+ * vertically.
+ */
+bool mtk_dsi_ddp_is_busy(struct device *dev)
+{
+	struct mtk_dsi *dsi = dev_get_drvdata(dev);
+
+	return !!(readl(dsi->regs + DSI_INTSTA) & DSI_BUSY);
+}
+
 void mtk_dsi_ddp_trigger(struct device *dev)
 {
 	struct mtk_dsi *dsi = dev_get_drvdata(dev);
@@ -1063,6 +1098,13 @@ static int mtk_dsi_host_attach(struct mipi_dsi_host *host,
 	dsi->lanes = device->lanes;
 	dsi->format = device->format;
 	dsi->mode_flags = device->mode_flags;
+	if (dsi_data_rate_mbps)
+		dsi->data_rate_mbps = dsi_data_rate_mbps;
+	if (!dsi->data_rate_mbps &&
+	    !of_property_read_u32(dev->of_node, "mediatek,data-rate-mbps",
+				  &dsi->data_rate_mbps))
+		dev_info(dev, "DSI link rate %u Mbit/s (from DT)\n",
+			 dsi->data_rate_mbps);
 	dsi->next_bridge = devm_drm_of_get_bridge(dev, dev->of_node, 1, 0);
 	if (IS_ERR(dsi->next_bridge)) {
 		ret = PTR_ERR(dsi->next_bridge);

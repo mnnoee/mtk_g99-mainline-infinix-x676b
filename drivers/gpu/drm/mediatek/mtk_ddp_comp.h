@@ -59,6 +59,7 @@ struct mtk_ddp_comp_funcs {
 	void (*start)(struct device *dev);
 	void (*stop)(struct device *dev);
 	void (*trigger)(struct device *dev);
+	bool (*is_busy)(struct device *dev);
 	void (*mem_config)(struct device *dev, dma_addr_t addr,
 			   unsigned int pitch, unsigned int format);
 	void (*scanout_config)(struct device *dev, dma_addr_t addr,
@@ -165,6 +166,14 @@ static inline void mtk_ddp_comp_stop(struct mtk_ddp_comp *comp)
 {
 	if (comp->funcs && comp->funcs->stop)
 		comp->funcs->stop(comp->dev);
+}
+
+static inline bool mtk_ddp_comp_is_busy(struct mtk_ddp_comp *comp)
+{
+	if (comp->funcs && comp->funcs->is_busy)
+		return comp->funcs->is_busy(comp->dev);
+
+	return false;
 }
 
 static inline void mtk_ddp_comp_trigger(struct mtk_ddp_comp *comp)

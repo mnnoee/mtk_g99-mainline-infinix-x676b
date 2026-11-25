@@ -320,6 +320,7 @@ static const struct mtk_ddp_comp_funcs ddp_dsi = {
 	.start = mtk_dsi_ddp_start,
 	.stop = mtk_dsi_ddp_stop,
 	.trigger = mtk_dsi_ddp_trigger,
+	.is_busy = mtk_dsi_ddp_is_busy,
 	.encoder_index = mtk_dsi_encoder_index,
 };
 

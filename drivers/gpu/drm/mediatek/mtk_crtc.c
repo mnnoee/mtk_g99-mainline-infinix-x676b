@@ -299,6 +299,15 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	if (mtk_crtc->config_updating)
 		goto resched;
 
+	/*
+	 * Pace the frames with the hardware.  Reprogramming the RDMA while
+	 * the DSI is still clocking out the previous frame makes that frame
+	 * switch buffers mid-stream, which shows up as the picture jumping
+	 * vertically.  Wait for the next idle window instead of guessing.
+	 */
+	if (mtk_ddp_comp_is_busy(mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1]))
+		goto resched;
+
 	fb = mtk_crtc_cmd_mode_get_fb(mtk_crtc, &addr);
 	if (!mtk_crtc->enabled) {
 		if (fb)
