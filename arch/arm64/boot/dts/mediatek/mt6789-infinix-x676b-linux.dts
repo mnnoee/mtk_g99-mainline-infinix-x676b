@@ -289,6 +289,25 @@
 			phandle = <0x10>;
 		};
 
+		/*
+		 * Tinysys SCP (RV55). Kept disabled: the stock firmware speaks the
+		 * Android mbox/IPI protocol, while the upstream mtk_scp driver uses
+		 * an SRAM-share IPI handshake. Wiring is ready for a future loader,
+		 * see docs/AGENTS/x676b_sensorhub_audit.md.
+		 */
+		scp@10500000 {
+			compatible = "mediatek,mt6789-scp", "mediatek,mt8192-scp";
+			reg = <0x10500000 0xc0000>,
+			      <0x10720000 0xe0000>,
+			      <0x10700000 0x8000>;
+			reg-names = "sram", "cfg", "l1tcm";
+			interrupts = <0x00 0x1d2 0x04 0x0b>;
+			clocks = <0x10 0x61>;
+			clock-names = "main";
+			memory-region = <0x2f1>;
+			status = "disabled";
+		};
+
 		syscon@10001000 {
 			compatible = "mediatek,mt6789-infracfg_ao", "mediatek,mt8781-infracfg_ao", "syscon";
 			reg = <0x10001000 0x1000>;
@@ -1987,7 +2006,9 @@
 
 		scp@bfa00000 {
 			reg = <0x00 0xbfa00000 0x00 0x400000>;
+			compatible = "shared-dma-pool";
 			no-map;
+			phandle = <0x2f1>;
 		};
 
 		dfdmcu_dump@fd000000 {
