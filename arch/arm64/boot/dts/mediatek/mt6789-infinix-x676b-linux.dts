@@ -472,6 +472,13 @@
 						phandle = <0x1a>;
 					};
 
+					vsram_core: vsram-core {
+						regulator-name = "vsram_core";
+						regulator-min-microvolt = <0x7a120>;
+						regulator-max-microvolt = <0x13bdb6>;
+						regulator-enable-ramp-delay = <0x384>;
+					};
+
 					vproc11 {
 						regulator-name = "vproc11";
 						regulator-min-microvolt = <0x7a120>;
@@ -1858,6 +1865,7 @@
 			compatible = "infinix,x676b-md-probe";
 			reg = <0xd0cf000 0x1000>;
 			vmodem-supply = <&vmodem>;
+			vsram-supply = <&vsram_core>;
 			status = "okay";
 		};
 
