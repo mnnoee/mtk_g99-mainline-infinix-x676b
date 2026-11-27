@@ -150,6 +150,7 @@ struct scp_dev {
 	phys_addr_t tcm_phys;
 	size_t tcm_size;
 	void __iomem *cfg;
+	void __iomem *scpsys;
 	void __iomem *clkreg;
 	void __iomem *dram;
 	phys_addr_t dram_phys;
@@ -204,6 +205,11 @@ static bool autostart;
 module_param(autostart, bool, 0444);
 MODULE_PARM_DESC(autostart, "Release the SCP during probe (default: 0)");
 
+static int release_method;
+module_param(release_method, int, 0644);
+MODULE_PARM_DESC(release_method,
+		 "0 = direct SW_RSTN_CLR, 1 = ATF SMC 0xc2000528 op3");
+
 int mtk_ipi_register(struct mtk_ipi_device *ipidev, int id,
 		     int (*cb)(unsigned int id, void *prdata, void *data,
 			       unsigned int len),
@@ -211,6 +217,8 @@ int mtk_ipi_register(struct mtk_ipi_device *ipidev, int id,
 int mtk_ipi_unregister(struct mtk_ipi_device *ipidev, int id);
 int mtk_ipi_send(struct mtk_ipi_device *ipidev, int id, int opt, void *data,
 		 int len, int timeout);
+static int scp_awake_lock(struct scp_dev *scp);
+static void scp_awake_unlock(struct scp_dev *scp);
 
 struct mtk_ipi_device scp_ipidev;
 EXPORT_SYMBOL_GPL(scp_ipidev);
@@ -760,10 +768,12 @@ int mtk_ipi_send(struct mtk_ipi_device *ipidev, int id, int opt, void *data,
 		ret = SCP_IPI_PIN_BUSY;
 		goto out;
 	}
+	scp_awake_lock(scp);
 	memcpy_toio(mb->base + pin->offset * SCP_MBOX_SLOT_SIZE, data, bytes);
 	/* Make sure the payload is visible before the doorbell. */
 	wmb();
 	writel(BIT(pin->pin_index), mb->set);
+	scp_awake_unlock(scp);
 out:
 	mutex_unlock(&scp->lock);
 	return ret;
@@ -793,6 +803,33 @@ static int scp_ready_handler(unsigned int id, void *prdata, void *data,
 	return 0;
 }
 
+static int scp_awake_lock(struct scp_dev *scp)
+{
+	u32 val;
+	int i;
+
+	if (!scp->ready)
+		return -1;
+	writel(0xA1, scp->scpsys + 0x0b14);
+	for (i = 0; i < 100000; i++) {
+		val = readl(scp->scpsys + 0x0b14);
+		if ((val & 0xA0) != 0xA0 || !(val & BIT(0)))
+			break;
+		udelay(10);
+	}
+	writel(0xA1, scp->scpsys + 0x0b18);
+	return (i < 100000) ? 0 : -1;
+}
+
+static void scp_awake_unlock(struct scp_dev *scp)
+{
+	if (!scp->ready)
+		return;
+	writel(0xA0, scp->scpsys + 0x0b14);
+	udelay(20);
+	writel(0xA0, scp->scpsys + 0x0b18);
+}
+
 static int scp_start(struct scp_dev *scp)
 {
 	unsigned long timeout;
@@ -810,8 +847,22 @@ static int scp_start(struct scp_dev *scp)
 
 	scp->ready = false;
 	scp->running = true;
-	dev_info(scp->dev, "releasing SCP core0 (SW_RSTN_CLR)\n");
-	scp_core_writel(scp, 0, SCP_CORE_SW_RSTN_CLR, 1);
+	/* Re-program the DRAM window immediately before release. */
+	scp_core_writel(scp, 0, SCP_CORE_DRAM_RESV_ADDR,
+			lower_32_bits(scp->dram_phys));
+	scp_core_writel(scp, 0, SCP_CORE_DRAM_RESV_SIZE, scp->dram_size);
+	wmb();
+	if (release_method == 1) {
+		struct arm_smccc_res res;
+
+		dev_info(scp->dev, "releasing SCP via ATF SMC op3\n");
+		arm_smccc_smc(0xc2000528, 3, 0, 0, 0, 0, 0, 0, &res);
+		dev_info(scp->dev, "SMC op3 -> a0=%#lx a1=%#lx a2=%#lx a3=%#lx\n",
+			 res.a0, res.a1, res.a2, res.a3);
+	} else {
+		dev_info(scp->dev, "releasing SCP core0 (SW_RSTN_CLR)\n");
+		scp_core_writel(scp, 0, SCP_CORE_SW_RSTN_CLR, 1);
+	}
 	mutex_unlock(&scp->lock);
 
 	timeout = wait_event_timeout(scp->ready_wq, scp->ready,
@@ -838,6 +889,8 @@ static void scp_stop(struct scp_dev *scp)
 {
 	mutex_lock(&scp->lock);
 	scp_assert_reset(scp);
+	WRITE_ONCE(scp_platform_ready_state, false);
+	blocking_notifier_call_chain(&scp_platform_notifier, SCP_EVENT_STOP, NULL);
 	scp->running = false;
 	scp->ready = false;
 	mutex_unlock(&scp->lock);
@@ -973,6 +1026,9 @@ static int scp_probe(struct platform_device *pdev)
 	 * so use the larger cfg mapping instead of a separate ioremap.
 	 */
 	scp->clkreg = scp->cfg + SCP_CFG_CLKREG_OFFSET;
+	scp->scpsys = scp_map_resource(scp, "scpsys");
+	if (IS_ERR(scp->scpsys))
+		return PTR_ERR(scp->scpsys);
 
 	scp->clk = devm_clk_get(scp->dev, "main");
 	if (IS_ERR(scp->clk))

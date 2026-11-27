@@ -299,6 +299,7 @@
 			compatible = "mediatek,mt6789-scp-tinysys";
 			reg = <0x10500000 0xc0000>,	/* TCM */
 			      <0x10720000 0xe0000>,	/* cfg: core0/1, GIPC */
+			      <0x10006000 0x1000>,	/* SCPSYS (awake IPC) */
 			      <0x10721000 0x1000>,	/* clock control */
 			      <0x10700000 0x8000>,	/* l1tcm */
 			      <0x107fb000 0x100>,	/* mbox0 data */
@@ -316,7 +317,7 @@
 			      <0x107ff000 0x100>,	/* mbox4 data */
 			      <0x107ff100 0x4>,
 			      <0x107ff10c 0x4>;
-			reg-names = "sram", "cfg", "clkreg", "l1tcm",
+			reg-names = "sram", "cfg", "scpsys", "clkreg", "l1tcm",
 				    "mbox0_base", "mbox0_set", "mbox0_clr",
 				    "mbox1_base", "mbox1_set", "mbox1_clr",
 				    "mbox2_base", "mbox2_set", "mbox2_clr",
