@@ -866,9 +866,9 @@ static int scp_start(struct scp_dev *scp)
 	mutex_unlock(&scp->lock);
 
 	timeout = wait_event_timeout(scp->ready_wq, scp->ready,
-				     msecs_to_jiffies(3000));
+				     msecs_to_jiffies(10000));
 	if (!timeout) {
-		dev_err(scp->dev, "SCP did not send ready IPI in 3s\n");
+		dev_err(scp->dev, "SCP did not send ready IPI in 10s\n");
 		scp_dump_regs(scp);
 		mutex_lock(&scp->lock);
 		scp->running = false;
@@ -889,11 +889,11 @@ static void scp_stop(struct scp_dev *scp)
 {
 	mutex_lock(&scp->lock);
 	scp_assert_reset(scp);
-	WRITE_ONCE(scp_platform_ready_state, false);
-	blocking_notifier_call_chain(&scp_platform_notifier, SCP_EVENT_STOP, NULL);
 	scp->running = false;
 	scp->ready = false;
 	mutex_unlock(&scp->lock);
+	WRITE_ONCE(scp_platform_ready_state, false);
+	blocking_notifier_call_chain(&scp_platform_notifier, SCP_EVENT_STOP, NULL);
 	dev_info(scp->dev, "SCP held in reset\n");
 }
 
@@ -1104,6 +1104,10 @@ static int scp_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	for (i = 0; i < SCP_MAX_MBOX; i++) {
+		/* Drop stale SCP->AP bits left by the bootloader. */
+		writel(0xffffffff, scp->mbox[i].clr);
+	}
 	for (i = 0; i < SCP_MAX_MBOX; i++) {
 		ret = devm_request_irq(scp->dev, scp->mbox[i].irq,
 				       scp_mbox_isr, 0,
