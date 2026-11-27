@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# MediaTek platform glue that has no upstream counterpart yet.
+
+source "drivers/misc/mediatek/sensorhub/Kconfig"

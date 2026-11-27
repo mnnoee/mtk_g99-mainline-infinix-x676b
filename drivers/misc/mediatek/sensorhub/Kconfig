@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config MTK_X676B_SENSORHUB
+	tristate "MediaTek sensorhub 2.0 transport (MT6789 X676B)"
+	depends on MTK_SCP_TINYSYS
+	help
+	  Vendor sensorhub 2.0 transport, ported from the Android 5.10
+	  kernel.  It talks to the tinysys SCP over the mbox/IPI driver
+	  and exposes the sensor list/events through /dev/hf_manager.
+	  This is bring-up code for the Infinix X676B; it is not
+	  upstream-quality yet.
