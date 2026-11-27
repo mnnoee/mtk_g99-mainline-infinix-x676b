@@ -200,9 +200,9 @@ MODULE_PARM_DESC(cmd_ddp_irq, "Apply pending CRTC config from the command-mode t
 module_param(cmd_tick, bool, 0644);
 MODULE_PARM_DESC(cmd_tick, "Command-mode frame trigger tick (disable for single-shot bring-up tests)");
 
-static bool cmd_sync_enable = true;
+static bool cmd_sync_enable;
 module_param(cmd_sync_enable, bool, 0644);
-MODULE_PARM_DESC(cmd_sync_enable, "Enable dma_sync on the command-mode framebuffer (disabling it yields a black screen)");
+MODULE_PARM_DESC(cmd_sync_enable, "Enable dma_sync on the command-mode framebuffer (the fbdev buffer is write-combined, so it is off by default)");
 
 static bool cmd_fast_trigger = true;
 module_param(cmd_fast_trigger, bool, 0644);
