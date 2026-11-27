@@ -144,4 +144,15 @@ config LEDS_TPS6131X
 
 	  This driver can be built as a module, it will be called "leds-tps6131x".
 
+config LEDS_OCP81375
+	tristate "LED flash driver for Orient-Chip OCP81375"
+	depends on I2C && OF
+	help
+	  This option enables support for the Orient-Chip OCP81375 dual LED
+	  flash controller (used in the Infinix X676B).  It exposes one
+	  flash LED class device per current source, with torch brightness,
+	  strobe and hardware fault reporting.
+
+	  This driver can be built as a module, it will be called "leds-ocp81375".
+
 endif # LEDS_CLASS_FLASH
