@@ -326,6 +326,15 @@ static irqreturn_t edt_ft5x06_ts_isr(int irq, void *dev_id)
 
 		x = get_unaligned_be16(buf) & 0x0fff;
 		y = get_unaligned_be16(buf + 2) & 0x0fff;
+
+		/*
+		 * The FT5452 pads the unused slots with zeros: type decodes
+		 * as TOUCH_DOWN, id 0, x 0, y 0.  Walking all slots would
+		 * inject a phantom contact in the top left corner on every
+		 * report, so drop empty points.
+		 */
+		if (!x && !y && type == TOUCH_EVENT_DOWN)
+			continue;
 		/* The FT5x26 send the y coordinate first */
 		if (tsdata->version == EV_FT)
 			swap(x, y);
