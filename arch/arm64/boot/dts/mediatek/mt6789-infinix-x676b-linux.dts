@@ -1054,6 +1054,7 @@
 			#mbox-cells = <0x02>;
 			clocks = <0x11 0x02>;
 			clock-names = "gce";
+			phandle = <0x200>;
 		};
 
 		syscon@14000000 {
@@ -1061,6 +1062,7 @@
 			reg = <0x14000000 0x1000>;
 			#clock-cells = <0x01>;
 			phandle = <0x40>;
+			mboxes = <0x200 0x00 0x07>, <0x200 0x01 0x07>, <0x200 0x02 0x07>;
 		};
 
 		display@14000000 {
