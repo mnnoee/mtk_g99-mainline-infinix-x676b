@@ -296,12 +296,41 @@
 		 * see docs/AGENTS/x676b_sensorhub_audit.md.
 		 */
 		scp@10500000 {
-			compatible = "mediatek,mt6789-scp", "mediatek,mt8192-scp";
-			reg = <0x10500000 0xc0000>,
-			      <0x10720000 0xe0000>,
-			      <0x10700000 0x8000>;
-			reg-names = "sram", "cfg", "l1tcm";
-			interrupts = <0x00 0x1d2 0x04 0x0b>;
+			compatible = "mediatek,mt6789-scp-tinysys";
+			reg = <0x10500000 0xc0000>,	/* TCM */
+			      <0x10720000 0xe0000>,	/* cfg: core0/1, GIPC */
+			      <0x10721000 0x1000>,	/* clock control */
+			      <0x10700000 0x8000>,	/* l1tcm */
+			      <0x107fb000 0x100>,	/* mbox0 data */
+			      <0x107fb100 0x4>,		/* mbox0 set */
+			      <0x107fb10c 0x4>,		/* mbox0 clr */
+			      <0x107fc000 0x100>,	/* mbox1 data */
+			      <0x107fc100 0x4>,
+			      <0x107fc10c 0x4>,
+			      <0x107fd000 0x100>,	/* mbox2 data */
+			      <0x107fd100 0x4>,
+			      <0x107fd10c 0x4>,
+			      <0x107fe000 0x100>,	/* mbox3 data */
+			      <0x107fe100 0x4>,
+			      <0x107fe10c 0x4>,
+			      <0x107ff000 0x100>,	/* mbox4 data */
+			      <0x107ff100 0x4>,
+			      <0x107ff10c 0x4>;
+			reg-names = "sram", "cfg", "clkreg", "l1tcm",
+				    "mbox0_base", "mbox0_set", "mbox0_clr",
+				    "mbox1_base", "mbox1_set", "mbox1_clr",
+				    "mbox2_base", "mbox2_set", "mbox2_clr",
+				    "mbox3_base", "mbox3_set", "mbox3_clr",
+				    "mbox4_base", "mbox4_set", "mbox4_clr";
+			interrupts = <0x00 0x1d2 0x04 0x0b>,	/* ipc0 */
+				     <0x00 0x1d3 0x04 0x0b>,	/* ipc1 */
+				     <0x00 0x1d4 0x04 0x0b>,	/* mbox0 */
+				     <0x00 0x1d5 0x04 0x0b>,
+				     <0x00 0x1d6 0x04 0x0b>,
+				     <0x00 0x1d7 0x04 0x0b>,
+				     <0x00 0x1d8 0x04 0x0b>;
+			interrupt-names = "ipc0", "ipc1", "mbox0", "mbox1",
+					  "mbox2", "mbox3", "mbox4";
 			clocks = <0x10 0x61>;
 			clock-names = "main";
 			memory-region = <0x2f1>;
