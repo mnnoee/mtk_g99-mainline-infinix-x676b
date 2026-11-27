@@ -1852,8 +1852,8 @@
 			compatible = "infinix,x676b-cam-mclk";
 			reg = <0x1a004000 0x6000>;
 			power-domains = <0x23 0x06>, <0x23 0x0c>;
-			clocks = <0x10 0x6a>, <0x2f0 0x03>, <0x2f0 0x04>;
-			clock-names = "camtg-sel", "camtg", "seninf";
+			clocks = <0x10 0x6a>, <0x10 0x6b>, <0x10 0x21>, <0x2f0 0x03>, <0x2f0 0x04>;
+			clock-names = "camtg-sel", "camtg2-sel", "mclk-freq", "camtg", "seninf";
 			pinctrl-names = "default";
 			pinctrl-0 = <&cam0_mclk_pins>;
 			status = "okay";
