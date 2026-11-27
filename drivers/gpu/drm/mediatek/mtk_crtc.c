@@ -204,7 +204,7 @@ static bool cmd_sync_enable = true;
 module_param(cmd_sync_enable, bool, 0644);
 MODULE_PARM_DESC(cmd_sync_enable, "Enable dma_sync on the command-mode framebuffer (disabling it yields a black screen)");
 
-static bool cmd_fast_trigger;
+static bool cmd_fast_trigger = true;
 module_param(cmd_fast_trigger, bool, 0644);
 MODULE_PARM_DESC(cmd_fast_trigger, "Trigger the DSI at the TE edge and prepare the next frame while it is busy");
 

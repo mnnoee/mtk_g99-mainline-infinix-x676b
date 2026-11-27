@@ -1167,6 +1167,7 @@
 
 		dsi@14013000 {
 			compatible = "mediatek,mt6789-dsi";
+			mediatek,data-rate-mbps = <1120>;
 			reg = <0x14013000 0x1000>;
 			interrupts = <0x00 0x12d 0x04 0x00>;
 			power-domains = <0x23 0x0a>;
