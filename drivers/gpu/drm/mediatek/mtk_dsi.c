@@ -988,9 +988,9 @@ bool mtk_dsi_ddp_is_busy(struct device *dev)
 	struct mtk_dsi *dsi = dev_get_drvdata(dev);
 
 	/*
-	 * In the vendor frame-trigger mode BUSY is cleared by the engine
-	 * reset inside the trigger itself, so reporting it here would block
-	 * the very trigger that has to clear it.
+	 * The vendor frame-trigger sequence resets the engine on every
+	 * frame and never lets BUSY settle, so waiting for it would block
+	 * the experiment that enables the sequence in the first place.
 	 */
 	if (cmd_vendor_trigger)
 		return false;
@@ -1007,9 +1007,13 @@ void mtk_dsi_ddp_trigger(struct device *dev)
 		return;
 
 	/*
-	 * Never start a new frame while the previous transfer is still in
-	 * flight: overlapping triggers wedge the DSI FSM in BUSY and no
-	 * software reset can recover it.
+	 * Command-mode transfers must not overlap: triggering a new frame
+	 * while the previous one is still being clocked out wedges the FSM
+	 * in BUSY for good.  The vendor engine-reset sequence does not get
+	 * around this on this panel - with it every frame leaves BUSY set
+	 * and the panel keeps showing the last latched picture - so it is
+	 * opt-in via cmd_vendor_trigger and the plain path below is the one
+	 * that actually refreshes the display.
 	 */
 	if (readl(dsi->regs + DSI_INTSTA) & DSI_BUSY)
 		return;

@@ -26,6 +26,7 @@
 #include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_format_helper.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_modes.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
@@ -110,12 +111,17 @@ struct mtk_crtc {
 	struct device			*te_dev;
 	bool				te_mode;
 	u64				te_count;
+	u64				te_seen;
 	u64				work_count;
 	u64				trig_count;
 	u64				w_busy;
 	u64				w_nofb;
 	u64				w_upd;
 	u64				w_maxms;
+	u64				w_sum_ms;
+	u64				w_sync_ms;
+	u64				w_cfg_ms;
+	u64				w_tail_ms;
 };
 
 struct mtk_crtc_state {
@@ -175,12 +181,12 @@ static bool cmd_ddp_irq = false;
 static bool cmd_memory_mode = true;
 module_param(cmd_memory_mode, bool, 0644);
 MODULE_PARM_DESC(cmd_memory_mode, "Pull frames through RDMA memory mode (software RGB888 conversion)");
-static bool te_pacing;
+static bool te_pacing = true;
 module_param(te_pacing, bool, 0644);
 MODULE_PARM_DESC(te_pacing, "Pace command-mode frames with the panel TE pin instead of a timer");
-static unsigned int cmd_period_ms = 33;
+static unsigned int cmd_period_ms;
 module_param(cmd_period_ms, uint, 0644);
-MODULE_PARM_DESC(cmd_period_ms, "Command-mode frame period in ms");
+MODULE_PARM_DESC(cmd_period_ms, "Command-mode frame period in ms (0 = follow the mode refresh rate)");
 module_param(cmd_ddp_irq, bool, 0644);
 MODULE_PARM_DESC(cmd_ddp_irq, "Apply pending CRTC config from the command-mode tick");
 module_param(cmd_tick, bool, 0644);
@@ -335,6 +341,18 @@ static irqreturn_t mtk_crtc_te_isr(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+static unsigned int mtk_crtc_cmd_period_ms(struct mtk_crtc *mtk_crtc)
+{
+	unsigned int vrefresh = drm_mode_vrefresh(&mtk_crtc->base.mode);
+
+	if (cmd_period_ms)
+		return cmd_period_ms;
+	if (!vrefresh)
+		return 33;
+
+	return DIV_ROUND_UP(1000, vrefresh);
+}
+
 static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 {
 	struct mtk_crtc *mtk_crtc = container_of(work, struct mtk_crtc,
@@ -423,16 +441,24 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 		 * what the DSI sends: give the buffer to the RDMA as-is and
 		 * skip the software conversion entirely.
 		 */
-		dma_sync_single_for_device(mtk_crtc->base.dev->dev, addr,
-					   fb->pitches[0] * fb->height,
-					   DMA_TO_DEVICE);
+		{
+			ktime_t ts = ktime_get();
+
+			dma_sync_single_for_device(mtk_crtc->base.dev->dev, addr,
+						   fb->pitches[0] * fb->height,
+						   DMA_TO_DEVICE);
+			mtk_crtc->w_sync_ms += ktime_ms_delta(ktime_get(), ts);
+		}
 		for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
 			struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
 
 			if (comp->funcs && comp->funcs->mem_config) {
+				ktime_t ts = ktime_get();
+
 				comp->funcs->mem_config(comp->dev, addr,
 							fb->pitches[0],
 							fb->format->format);
+				mtk_crtc->w_cfg_ms += ktime_ms_delta(ktime_get(), ts);
 				break;
 			}
 		}
@@ -464,47 +490,75 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	if (fb)
 		drm_framebuffer_put(fb);
 
-	/* Re-arm RDMA before each frame in the direct path. */
-	if (!cmd_memory_mode && mtk_crtc->ddp_comp_nr > 1)
-		mtk_ddp_comp_start(mtk_crtc->ddp_comp[1]);
+	{
+		ktime_t ts = ktime_get();
 
-	/* Single-shot mutex: one software trigger per frame. */
-	mtk_mutex_enable(mtk_crtc->mutex);
+		/* Re-arm RDMA before each frame in the direct path. */
+		if (!cmd_memory_mode && mtk_crtc->ddp_comp_nr > 1)
+			mtk_ddp_comp_start(mtk_crtc->ddp_comp[1]);
 
-	/*
-	 * Give RDMA time to fill its FIFO before the DSI is told to start
-	 * pulling a frame: if 0x2C is sent while the FIFO is still empty,
-	 * the DSI FSM wedges in BUSY and cannot be recovered in software.
-	 */
-	usleep_range(1000, 2000);
+		/* Single-shot mutex: one software trigger per frame. */
+		mtk_mutex_enable(mtk_crtc->mutex);
 
-	/* Then ask the DSI for one frame. */
-	mtk_crtc->trig_count++;
-	mtk_ddp_comp_trigger(mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1]);
+		/*
+		 * Give RDMA time to fill its FIFO before the DSI is told to
+		 * start pulling a frame: if 0x2C is sent while the FIFO is
+		 * still empty, the DSI FSM wedges in BUSY and cannot be
+		 * recovered in software.
+		 */
+		usleep_range(1000, 2000);
+
+		/* Then ask the DSI for one frame. */
+		mtk_crtc->trig_count++;
+		mtk_ddp_comp_trigger(mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1]);
+		mtk_crtc->w_tail_ms += ktime_ms_delta(ktime_get(), ts);
+	}
 	{
 		unsigned int d = ktime_ms_delta(ktime_get(), tick_start);
 		if (d > mtk_crtc->w_maxms)
 			mtk_crtc->w_maxms = d;
+		mtk_crtc->w_sum_ms += d;
 	}
 
 resched:
 	if (mtk_crtc->te_mode && !(mtk_crtc->work_count % 120))
 		dev_info(mtk_crtc->base.dev->dev,
-			 "te=%llu work=%llu trig=%llu busy=%llu nofb=%llu upd=%llu maxms=%llu\n",
+			 "te=%llu work=%llu trig=%llu busy=%llu nofb=%llu upd=%llu maxms=%llu avgms=%llu syncms=%llu cfgms=%llu tailms=%llu\n",
 			 mtk_crtc->te_count, mtk_crtc->work_count,
 			 mtk_crtc->trig_count, mtk_crtc->w_busy,
-			 mtk_crtc->w_nofb, mtk_crtc->w_upd, mtk_crtc->w_maxms);
+			 mtk_crtc->w_nofb, mtk_crtc->w_upd, mtk_crtc->w_maxms,
+			 mtk_crtc->w_sum_ms / mtk_crtc->work_count,
+			 mtk_crtc->w_sync_ms / mtk_crtc->work_count,
+			 mtk_crtc->w_cfg_ms / mtk_crtc->work_count,
+			 mtk_crtc->w_tail_ms / mtk_crtc->work_count);
 
-	if (mtk_crtc->enabled && !mtk_crtc->te_mode) {
+	if (mtk_crtc->enabled) {
+		unsigned int period_ms = mtk_crtc_cmd_period_ms(mtk_crtc);
+		unsigned int target_ms = period_ms;
+		unsigned int elapsed_ms;
+		unsigned int delay_ms;
+
 		/*
-		 * Keep a fixed grid: the next frame starts cmd_period_ms after
-		 * this one did, not cmd_period_ms after the work finished.
-		 * Otherwise the conversion time is added to every period and a
-		 * 60 Hz panel ends up at ~40 fps.
+		 * TE and the timer must not fight over the same frame: if a
+		 * TE edge arrived since the previous frame the display is
+		 * paced by the panel, and the timer only has to act as a
+		 * watchdog (two periods out).  Without a TE edge the timer
+		 * drives the frames itself.
 		 */
-		unsigned int elapsed_ms = ktime_ms_delta(ktime_get(), tick_start);
-		unsigned int delay_ms = cmd_period_ms > elapsed_ms ?
-					cmd_period_ms - elapsed_ms : 1;
+		if (mtk_crtc->te_mode &&
+		    mtk_crtc->te_count != mtk_crtc->te_seen) {
+			mtk_crtc->te_seen = mtk_crtc->te_count;
+			target_ms = period_ms * 2;
+		}
+
+		/*
+		 * Keep a fixed grid: the next frame starts target_ms after
+		 * this one did, not after the work finished.  Otherwise the
+		 * conversion time is added to every period and a 60 Hz panel
+		 * ends up at ~40 fps.
+		 */
+		elapsed_ms = ktime_ms_delta(ktime_get(), tick_start);
+		delay_ms = target_ms > elapsed_ms ? target_ms - elapsed_ms : 1;
 
 		schedule_delayed_work(&mtk_crtc->cmd_mode_work,
 				      msecs_to_jiffies(delay_ms));
