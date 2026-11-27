@@ -13,6 +13,7 @@
 #include <linux/dma-mapping.h>
 
 #include <drm/clients/drm_client_setup.h>
+#include <linux/moduleparam.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
@@ -36,6 +37,10 @@
 #define DRIVER_DESC "Mediatek SoC DRM"
 #define DRIVER_MAJOR 1
 #define DRIVER_MINOR 0
+
+static bool fb_argb;
+module_param(fb_argb, bool, 0644);
+MODULE_PARM_DESC(fb_argb, "Ask the fbdev client for XRGB8888 instead of packed RGB888");
 
 static const struct drm_mode_config_helper_funcs mtk_drm_mode_config_helpers = {
 	.atomic_commit_tail = drm_atomic_helper_commit_tail_rpm,
@@ -724,7 +729,8 @@ static int mtk_drm_bind(struct device *dev)
 	 * 24 bpp here lets the command-mode path hand the framebuffer to the
 	 * hardware without any software conversion.
 	 */
-	drm_client_setup(drm, drm_format_info(DRM_FORMAT_RGB888));
+	drm_client_setup(drm, drm_format_info(fb_argb ? DRM_FORMAT_XRGB8888 :
+					       DRM_FORMAT_RGB888));
 
 	return 0;
 
