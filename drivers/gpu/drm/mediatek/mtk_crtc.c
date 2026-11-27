@@ -96,6 +96,14 @@ struct mtk_crtc {
 	void				*cmd_conv_buf[2];
 	dma_addr_t			cmd_conv_dma[2];
 	unsigned int			cmd_conv_idx;
+	/* fast-trigger state: armed frame + address actually programmed in RDMA */
+	bool				cmd_armed;
+	dma_addr_t			cmd_pending_addr;
+	unsigned int			cmd_pending_pitch;
+	uint32_t			cmd_pending_fmt;
+	dma_addr_t			cmd_prog_addr;
+	struct drm_framebuffer		*cmd_arm_fb;
+	u64				cmd_last_te;
 	/*
 	 * Snapshot of the plane-0 framebuffer, taken in atomic_begin() where
 	 * the modeset locks are held.  The command-mode worker must not take
@@ -195,6 +203,10 @@ MODULE_PARM_DESC(cmd_tick, "Command-mode frame trigger tick (disable for single-
 static bool cmd_sync_enable = true;
 module_param(cmd_sync_enable, bool, 0644);
 MODULE_PARM_DESC(cmd_sync_enable, "Enable dma_sync on the command-mode framebuffer (disabling it yields a black screen)");
+
+static bool cmd_fast_trigger;
+module_param(cmd_fast_trigger, bool, 0644);
+MODULE_PARM_DESC(cmd_fast_trigger, "Trigger the DSI at the TE edge and prepare the next frame while it is busy");
 
 static void mtk_crtc_ddp_irq(void *data);
 
@@ -377,6 +389,115 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	if (mtk_crtc->config_updating) {
 		mtk_crtc->w_upd++;
 		goto resched;
+	}
+
+	/*
+	 * Fast trigger path: the TE interrupt runs the worker, which fires
+	 * the DSI immediately and prepares the *next* frame while the DSI
+	 * clocks the current one out.  The 4 ms dma_sync and the RDMA
+	 * (re)programming therefore never sit between the TE edge and the
+	 * frame trigger, which is what capped the panel at ~30 fps: the
+	 * transfer is 15.1 ms at 1120 Mbit/s and the TE period is 16.67 ms,
+	 * so only ~1.5 ms of slack exists.
+	 */
+	if (cmd_fast_trigger) {
+		bool busy;
+
+		busy = mtk_ddp_comp_is_busy(mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1]);
+
+		if (!busy && mtk_crtc->cmd_armed &&
+		    (!mtk_crtc->te_mode || mtk_crtc->te_count != mtk_crtc->cmd_last_te)) {
+			bool did_config = false;
+
+			if (mtk_crtc->cmd_pending_addr &&
+			    mtk_crtc->cmd_pending_addr != mtk_crtc->cmd_prog_addr) {
+				for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
+					struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
+
+					if (comp->funcs && comp->funcs->mem_config) {
+						ktime_t ts = ktime_get();
+
+						comp->funcs->mem_config(comp->dev,
+									mtk_crtc->cmd_pending_addr,
+									mtk_crtc->cmd_pending_pitch,
+									mtk_crtc->cmd_pending_fmt);
+						mtk_crtc->w_cfg_ms += ktime_ms_delta(ktime_get(), ts);
+						break;
+					}
+				}
+				mtk_crtc->cmd_prog_addr = mtk_crtc->cmd_pending_addr;
+				did_config = true;
+			}
+
+			mtk_mutex_enable(mtk_crtc->mutex);
+			/* Let the RDMA refill its FIFO after a buffer change. */
+			if (did_config)
+				usleep_range(1000, 2000);
+
+			{
+				ktime_t ts = ktime_get();
+
+				mtk_crtc->trig_count++;
+				mtk_ddp_comp_trigger(
+					mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1]);
+				mtk_crtc->w_tail_ms += ktime_ms_delta(ktime_get(), ts);
+			}
+			mtk_crtc->cmd_last_te = mtk_crtc->te_count;
+			mtk_crtc->cmd_armed = false;
+			if (mtk_crtc->cmd_arm_fb) {
+				drm_framebuffer_put(mtk_crtc->cmd_arm_fb);
+				mtk_crtc->cmd_arm_fb = NULL;
+			}
+		} else if (busy) {
+			mtk_crtc->w_busy++;
+		}
+
+		/* Arm the next frame while the DSI is still transmitting. */
+		fb = mtk_crtc_cmd_peek_fb(mtk_crtc, &addr);
+		if (fb) {
+			if (mtk_crtc->cmd_arm_fb)
+				drm_framebuffer_put(mtk_crtc->cmd_arm_fb);
+			{
+				ktime_t ts = ktime_get();
+
+				if (cmd_sync_enable)
+					dma_sync_single_for_device(mtk_crtc->base.dev->dev,
+								   addr,
+								   fb->pitches[0] * fb->height,
+								   DMA_TO_DEVICE);
+				mtk_crtc->w_sync_ms += ktime_ms_delta(ktime_get(), ts);
+			}
+			mtk_crtc->cmd_arm_fb = fb;
+			mtk_crtc->cmd_pending_addr = addr;
+			mtk_crtc->cmd_pending_pitch = fb->pitches[0];
+			mtk_crtc->cmd_pending_fmt = fb->format->format;
+			mtk_crtc->cmd_armed = true;
+		} else {
+			mtk_crtc->w_nofb++;
+		}
+
+		mtk_drm_finish_page_flip(mtk_crtc);
+
+		if (mtk_crtc->te_mode && !(mtk_crtc->work_count % 120))
+			dev_info(mtk_crtc->base.dev->dev,
+				 "te=%llu work=%llu trig=%llu busy=%llu nofb=%llu upd=%llu maxms=%llu avgms=%llu syncms=%llu cfgms=%llu tailms=%llu\n",
+				 mtk_crtc->te_count, mtk_crtc->work_count,
+				 mtk_crtc->trig_count, mtk_crtc->w_busy,
+				 mtk_crtc->w_nofb, mtk_crtc->w_upd, mtk_crtc->w_maxms,
+				 mtk_crtc->w_sum_ms / mtk_crtc->work_count,
+				 mtk_crtc->w_sync_ms / mtk_crtc->work_count,
+				 mtk_crtc->w_cfg_ms / mtk_crtc->work_count,
+				 mtk_crtc->w_tail_ms / mtk_crtc->work_count);
+
+		/*
+		 * Do NOT re-arm the delayed work here.  queue_delayed_work()
+		 * refuses to touch a work item that is already pending, so a
+		 * timer rescheduled from inside the worker would swallow the
+		 * TE interrupt's "run now" requests and the panel would drop
+		 * to the timer rate.  The TE interrupt is the heartbeat in
+		 * this mode; a separate watchdog handles a missing TE.
+		 */
+		return;
 	}
 
 	/*
