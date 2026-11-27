@@ -706,3 +706,11 @@ config STK8BA50
 	  will be called stk8ba50.
 
 endmenu
+
+config X676B_SCP_ACCEL
+	tristate "X676B SCP share-memory accelerometer"
+	depends on IIO
+	help
+	  Poll the tinysys SCP sensorhub ring buffer in the 0x8f000000 share
+	  memory and expose the MXC4005X accelerometer through IIO.  This is
+	  an X676B bring-up driver; it does not need the SCP mailbox IPI.
