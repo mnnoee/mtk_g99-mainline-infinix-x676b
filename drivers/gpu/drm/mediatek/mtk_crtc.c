@@ -1611,19 +1611,12 @@ int mtk_crtc_create(struct drm_device *drm_dev, const unsigned int *path,
 						 &mtk_crtc->cmdq_event);
 		if (ret) {
 			/*
-			 * The X676B DT carries the vendor "gce-events" list on
-			 * the display node, not the mainline property on the
-			 * mutex node.  Use the first three events of that list:
-			 * they are the MUTEX SOF events of CRTC 0..2.
+			 * No mainline "mediatek,gce-events" property: leave the
+			 * channel alone.  Forcing a vendor event here (0x1b2,
+			 * disp_mutex0_eof) keeps the channel allocated, but the
+			 * command-mode flip completion is then skipped and every
+			 * atomic commit waits the full 10 s flip_done timeout.
 			 */
-			static const u32 x676b_mutex_events[] = {
-				0x1b2, 0x280, 0x1c2
-			};
-
-			if (i < ARRAY_SIZE(x676b_mutex_events)) {
-				mtk_crtc->cmdq_event = x676b_mutex_events[i];
-				ret = 0;
-			}
 		}
 		if (ret) {
 			dev_dbg(dev, "mtk_crtc %d failed to get mediatek,gce-events property\n",
