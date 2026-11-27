@@ -102,6 +102,8 @@ struct mtk_crtc {
 	unsigned int			cmd_pending_pitch;
 	uint32_t			cmd_pending_fmt;
 	dma_addr_t			cmd_prog_addr;
+	unsigned int			cmd_prog_pitch;
+	uint32_t			cmd_prog_fmt;
 	struct drm_framebuffer		*cmd_arm_fb;
 	u64				cmd_last_te;
 	/*
@@ -410,7 +412,9 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 			bool did_config = false;
 
 			if (mtk_crtc->cmd_pending_addr &&
-			    mtk_crtc->cmd_pending_addr != mtk_crtc->cmd_prog_addr) {
+			    (mtk_crtc->cmd_pending_addr != mtk_crtc->cmd_prog_addr ||
+			     mtk_crtc->cmd_pending_pitch != mtk_crtc->cmd_prog_pitch ||
+			     mtk_crtc->cmd_pending_fmt != mtk_crtc->cmd_prog_fmt)) {
 				for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
 					struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
 
@@ -426,6 +430,8 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 					}
 				}
 				mtk_crtc->cmd_prog_addr = mtk_crtc->cmd_pending_addr;
+				mtk_crtc->cmd_prog_pitch = mtk_crtc->cmd_pending_pitch;
+				mtk_crtc->cmd_prog_fmt = mtk_crtc->cmd_pending_fmt;
 				did_config = true;
 			}
 
