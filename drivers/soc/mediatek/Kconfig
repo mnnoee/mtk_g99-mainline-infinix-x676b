@@ -79,6 +79,16 @@ config MTK_SVS
 	  chip process corner, temperatures and other factors. Then DVFS
 	  driver could apply SVS bank voltage to PMIC/Buck.
 
+config MTK_SCP_TINYSYS
+	tristate "MediaTek tinysys SCP loader and mbox/IPI transport"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF && HAS_IOMEM
+	help
+	  Experimental loader and mailbox/IPI transport for the MediaTek
+	  tinysys SCP found on MT6789 and related SoCs.  The stock firmware
+	  is not an ELF image; it is described by a region-info structure in
+	  TCM and talks to the AP over five small mailboxes.
+
 config MTK_SOCINFO
 	tristate "MediaTek SoC Information"
 	default y
