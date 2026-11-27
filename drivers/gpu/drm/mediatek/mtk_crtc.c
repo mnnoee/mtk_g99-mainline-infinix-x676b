@@ -192,6 +192,10 @@ MODULE_PARM_DESC(cmd_ddp_irq, "Apply pending CRTC config from the command-mode t
 module_param(cmd_tick, bool, 0644);
 MODULE_PARM_DESC(cmd_tick, "Command-mode frame trigger tick (disable for single-shot bring-up tests)");
 
+static bool cmd_sync_enable = true;
+module_param(cmd_sync_enable, bool, 0644);
+MODULE_PARM_DESC(cmd_sync_enable, "Enable dma_sync on the command-mode framebuffer (disabling it yields a black screen)");
+
 static void mtk_crtc_ddp_irq(void *data);
 
 /*
@@ -444,23 +448,33 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 		{
 			ktime_t ts = ktime_get();
 
-			dma_sync_single_for_device(mtk_crtc->base.dev->dev, addr,
-						   fb->pitches[0] * fb->height,
-						   DMA_TO_DEVICE);
+			if (cmd_sync_enable)
+				dma_sync_single_for_device(mtk_crtc->base.dev->dev, addr,
+							   fb->pitches[0] * fb->height,
+							   DMA_TO_DEVICE);
 			mtk_crtc->w_sync_ms += ktime_ms_delta(ktime_get(), ts);
 		}
-		for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
-			struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
+		/*
+		 * Only reprogram RDMA when the scanout address changed: the
+		 * address/pitch programming resets the RDMA FIFO and breaks the
+		 * in-flight transfer, so doing it every frame (even when the
+		 * same buffer is reused) caps the panel at ~half the frame rate.
+		 */
+		if (addr != mtk_crtc->cmd_fb_addr) {
+			for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
+				struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
 
-			if (comp->funcs && comp->funcs->mem_config) {
-				ktime_t ts = ktime_get();
+				if (comp->funcs && comp->funcs->mem_config) {
+					ktime_t ts = ktime_get();
 
-				comp->funcs->mem_config(comp->dev, addr,
-							fb->pitches[0],
-							fb->format->format);
-				mtk_crtc->w_cfg_ms += ktime_ms_delta(ktime_get(), ts);
-				break;
+					comp->funcs->mem_config(comp->dev, addr,
+								fb->pitches[0],
+								fb->format->format);
+					mtk_crtc->w_cfg_ms += ktime_ms_delta(ktime_get(), ts);
+					break;
+				}
 			}
+			mtk_crtc->cmd_fb_addr = addr;
 		}
 	} else if (cmd_memory_mode && fb && mtk_crtc->cmd_conv_buf[0]) {
 		/*

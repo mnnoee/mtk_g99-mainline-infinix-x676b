@@ -42,6 +42,10 @@ static bool cmd_vendor_trigger;
 module_param(cmd_vendor_trigger, bool, 0644);
 MODULE_PARM_DESC(cmd_vendor_trigger, "Use the vendor engine-reset-per-frame trigger sequence");
 
+static bool cmd_vendor_trigger_norst;
+module_param(cmd_vendor_trigger_norst, bool, 0644);
+MODULE_PARM_DESC(cmd_vendor_trigger_norst, "Vendor trigger sequence WITHOUT engine reset");
+
 static unsigned int dsi_data_rate_mbps;
 module_param(dsi_data_rate_mbps, uint, 0644);
 MODULE_PARM_DESC(dsi_data_rate_mbps, "Override the DSI link rate in Mbit/s per lane");
@@ -992,7 +996,7 @@ bool mtk_dsi_ddp_is_busy(struct device *dev)
 	 * frame and never lets BUSY settle, so waiting for it would block
 	 * the experiment that enables the sequence in the first place.
 	 */
-	if (cmd_vendor_trigger)
+	if (cmd_vendor_trigger || cmd_vendor_trigger_norst)
 		return false;
 
 	return !!(readl(dsi->regs + DSI_INTSTA) & DSI_BUSY);
@@ -1048,6 +1052,24 @@ void mtk_dsi_ddp_trigger(struct device *dev)
 		udelay(10);
 		mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_RESET, 0);
 
+		writel(0, dsi->regs + DSI_START);
+		udelay(10);
+		writel(1, dsi->regs + DSI_START);
+		return;
+	}
+
+	if (cmd_vendor_trigger_norst) {
+		u32 ctrl = readl(dsi->regs + DSI_CON_CTRL);
+		u32 trig = readl(dsi->regs + DSI_FRAME_TRIG);
+
+		writel(ctrl & ~CON_CTRL_TE_MODE, dsi->regs + DSI_CON_CTRL);
+		writel(trig | FRAME_TRIG_EN, dsi->regs + DSI_FRAME_TRIG);
+
+		writel(0x2c3909, dsi->regs + dsi->driver_data->reg_cmdq_off);
+		writel(1, dsi->regs + DSI_CMDQ_SIZE);
+		writel(1 | CMDQ_SIZE_SEL, dsi->regs + DSI_CMDQ_SIZE);
+
+		/* No engine reset - just START 0->1 */
 		writel(0, dsi->regs + DSI_START);
 		udelay(10);
 		writel(1, dsi->regs + DSI_START);
