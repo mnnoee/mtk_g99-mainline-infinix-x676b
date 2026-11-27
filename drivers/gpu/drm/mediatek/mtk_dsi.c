@@ -38,6 +38,10 @@
  * meaning as the "mediatek,data-rate-mbps" device tree property, but usable
  * without rebuilding the DTB.
  */
+static bool cmd_vendor_trigger;
+module_param(cmd_vendor_trigger, bool, 0644);
+MODULE_PARM_DESC(cmd_vendor_trigger, "Use the vendor engine-reset-per-frame trigger sequence");
+
 static unsigned int dsi_data_rate_mbps;
 module_param(dsi_data_rate_mbps, uint, 0644);
 MODULE_PARM_DESC(dsi_data_rate_mbps, "Override the DSI link rate in Mbit/s per lane");
@@ -105,6 +109,15 @@ MODULE_PARM_DESC(dsi_data_rate_mbps, "Override the DSI link rate in Mbit/s per l
 #define DSI_CMDQ_SIZE		0x60
 #define CMDQ_SIZE			0x3f
 #define CMDQ_SIZE_SEL		BIT(15)
+
+/*
+ * Vendor frame-trigger control: bit 16 is set together with every
+ * command-mode frame on MT6789 and cleared again when frame trigger mode
+ * is left.  The register has no mainline name yet, keep it local.
+ */
+#define DSI_FRAME_TRIG		0x6c
+#define FRAME_TRIG_EN		BIT(16)
+#define CON_CTRL_TE_MODE	BIT(24)
 
 #define DSI_HSTX_CKL_WC		0x64
 #define HSTX_CKL_WC			GENMASK(15, 2)
@@ -992,6 +1005,42 @@ void mtk_dsi_ddp_trigger(struct device *dev)
 	 */
 	if (readl(dsi->regs + DSI_INTSTA) & DSI_BUSY)
 		return;
+
+	if (cmd_vendor_trigger) {
+		/*
+		 * The vendor packet for a command-mode frame, as built by
+		 * mtk_dsi_config_trigger() in the Android driver:
+		 *
+		 *   CON_CTRL  &= ~BIT(24)
+		 *   0x6c      |= BIT(16)
+		 *   MUTEX     = 1
+		 *   CMDQ      = 0x2c3909   (frame trigger / write memory start)
+		 *   CMDQ_SIZE = 1, then |= BIT(15)
+		 *   CON_CTRL  |= BIT(0), then &= ~BIT(0)   (engine reset)
+		 *   START     = 0, then 1
+		 *
+		 * The engine reset is what releases DSI_BUSY after every
+		 * frame; without it only the first frame is ever sent.
+		 */
+		u32 ctrl = readl(dsi->regs + DSI_CON_CTRL);
+		u32 trig = readl(dsi->regs + DSI_FRAME_TRIG);
+
+		writel(ctrl & ~CON_CTRL_TE_MODE, dsi->regs + DSI_CON_CTRL);
+		writel(trig | FRAME_TRIG_EN, dsi->regs + DSI_FRAME_TRIG);
+
+		writel(0x2c3909, dsi->regs + dsi->driver_data->reg_cmdq_off);
+		writel(1, dsi->regs + DSI_CMDQ_SIZE);
+		writel(1 | CMDQ_SIZE_SEL, dsi->regs + DSI_CMDQ_SIZE);
+
+		mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_RESET, DSI_RESET);
+		udelay(10);
+		mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_RESET, 0);
+
+		writel(0, dsi->regs + DSI_START);
+		udelay(10);
+		writel(1, dsi->regs + DSI_START);
+		return;
+	}
 
 	/*
 	 * Command mode frame transfer: DCS 0x2C (write_memory_start) must sit
