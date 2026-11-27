@@ -491,6 +491,12 @@
 						regulator-allowed-modes = <0x00 0x01>;
 						phandle = <0x18>;
 					};
+
+					vmodem: vmodem {
+						regulator-name = "vmodem";
+						regulator-min-microvolt = <0x7a120>;
+						regulator-max-microvolt = <0x13bdb6>;
+					};
 				};
 
 				mt6358rtc {
@@ -1848,6 +1854,13 @@
 			phandle = <0x2f0>;
 		};
 
+		md-probe@d0cf000 {
+			compatible = "infinix,x676b-md-probe";
+			reg = <0xd0cf000 0x1000>;
+			vmodem-supply = <&vmodem>;
+			status = "okay";
+		};
+
 		cam-mclk@1a004000 {
 			compatible = "infinix,x676b-cam-mclk";
 			reg = <0x1a004000 0x6000>;
@@ -1939,6 +1952,16 @@
 
 		md_mem4@dc000000 {
 			reg = <0x00 0xdc000000 0x00 0x14b0000>;
+			no-map;
+		};
+
+		md_mem1@ddc00000 {
+			reg = <0x00 0xddc00000 0x00 0x430000>;
+			no-map;
+		};
+
+		md_mem2@de800000 {
+			reg = <0x00 0xde800000 0x00 0x2c10000>;
 			no-map;
 		};
 
