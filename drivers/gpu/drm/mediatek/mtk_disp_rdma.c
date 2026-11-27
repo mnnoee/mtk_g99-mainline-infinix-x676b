@@ -186,10 +186,16 @@ void mtk_rdma_set_memory(struct device *dev, dma_addr_t addr,
 		mem_con = MEM_MODE_INPUT_FORMAT_RGB565 | MEM_MODE_INPUT_SWAP;
 		break;
 	case DRM_FORMAT_RGB888:
-		mem_con = MEM_MODE_INPUT_FORMAT_RGB888;
+		/*
+		 * The RDMA "RGB888" mode feeds the panel in BGR order: measured
+		 * on the X676B with uniform red/green/blue fills (red came out
+		 * blue and vice versa).  Ask for the byte swap so an RGB888
+		 * buffer reaches the panel as RGB.
+		 */
+		mem_con = MEM_MODE_INPUT_FORMAT_RGB888 | MEM_MODE_INPUT_SWAP;
 		break;
 	case DRM_FORMAT_BGR888:
-		mem_con = MEM_MODE_INPUT_FORMAT_RGB888 | MEM_MODE_INPUT_SWAP;
+		mem_con = MEM_MODE_INPUT_FORMAT_RGB888;
 		break;
 	case DRM_FORMAT_ARGB8888:
 	case DRM_FORMAT_XRGB8888:
