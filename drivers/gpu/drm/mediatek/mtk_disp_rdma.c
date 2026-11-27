@@ -197,14 +197,28 @@ void mtk_rdma_set_memory(struct device *dev, dma_addr_t addr,
 	case DRM_FORMAT_BGR888:
 		mem_con = MEM_MODE_INPUT_FORMAT_RGB888;
 		break;
+	/*
+	 * Vendor mapping (mtk_disp_rdma.c in the Xiaomi 5.10 tree): XRGB8888
+	 * and ARGB8888 use the RGBA8888 input mode, while RGBX8888/RGBA8888
+	 * use ARGB8888.  The opposite order made a 32 bpp buffer scan out
+	 * with the wrong channels (a red fbdev showed up white).
+	 */
 	case DRM_FORMAT_ARGB8888:
 	case DRM_FORMAT_XRGB8888:
 	default:
+		mem_con = MEM_MODE_INPUT_FORMAT_RGBA8888;
+		break;
+	case DRM_FORMAT_RGBX8888:
+	case DRM_FORMAT_RGBA8888:
 		mem_con = MEM_MODE_INPUT_FORMAT_ARGB8888;
+		break;
+	case DRM_FORMAT_BGRX8888:
+	case DRM_FORMAT_BGRA8888:
+		mem_con = MEM_MODE_INPUT_FORMAT_ARGB8888 | MEM_MODE_INPUT_SWAP;
 		break;
 	case DRM_FORMAT_ABGR8888:
 	case DRM_FORMAT_XBGR8888:
-		mem_con = MEM_MODE_INPUT_FORMAT_ARGB8888 | MEM_MODE_INPUT_SWAP;
+		mem_con = MEM_MODE_INPUT_FORMAT_RGBA8888 | MEM_MODE_INPUT_SWAP;
 		break;
 	}
 
