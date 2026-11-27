@@ -210,6 +210,15 @@ module_param(release_method, int, 0644);
 MODULE_PARM_DESC(release_method,
 		 "0 = direct SW_RSTN_CLR, 1 = ATF SMC 0xc2000528 op3");
 
+static unsigned int log_offset;
+module_param(log_offset, uint, 0644);
+MODULE_PARM_DESC(log_offset, "Offset inside the SCP logger ring");
+
+static bool assert_on_timeout = true;
+module_param(assert_on_timeout, bool, 0644);
+MODULE_PARM_DESC(assert_on_timeout,
+		 "Assert SCP reset when the ready IPI times out (default: 1)");
+
 int mtk_ipi_register(struct mtk_ipi_device *ipidev, int id,
 		     int (*cb)(unsigned int id, void *prdata, void *data,
 			       unsigned int len),
@@ -336,6 +345,10 @@ static void scp_dump_regs(struct scp_dev *scp)
 		 scp_core_readl(scp, 1, SCP_CORE_SW_RSTN_CLR),
 		 scp_core_readl(scp, 1, SCP_CORE_SW_RSTN_SET),
 		 scp_core_readl(scp, 1, SCP_CORE_STATUS));
+	dev_info(scp->dev, "mbox init %#x %#x %#x %#x %#x\n",
+		 readl(scp->cfg + 0x85020), readl(scp->cfg + 0x85024),
+		 readl(scp->cfg + 0x85028), readl(scp->cfg + 0x8502c),
+		 readl(scp->cfg + 0x85030));
 	dev_info(scp->dev, "clk sw_sel=%#x enable=%#x l1pd=%#x cpu0pd=%#x l2pd=%#x/%#x/%#x\n",
 		 readl(scp->clkreg + SCP_CLK_SW_SEL),
 		 readl(scp->clkreg + SCP_CLK_ENABLE),
@@ -449,6 +462,13 @@ static int scp_load_firmware(struct scp_dev *scp)
 	/* Clear TCM and copy the 0x2000-byte loader. */
 	memset_io(scp->tcm, 0, scp->tcm_size);
 	memcpy_toio(scp->tcm, sram, SCP_LOADER_SIZE);
+	{
+		u32 check[4];
+
+		memcpy_fromio(check, scp->tcm, sizeof(check));
+		dev_info(scp->dev, "TCM readback: %08x %08x %08x %08x\n",
+			 check[0], check[1], check[2], check[3]);
+	}
 
 	/*
 	 * DRAM layout expected by the SCP loader:
@@ -493,16 +513,36 @@ static void scp_prepare_hw(struct scp_dev *scp)
 	/* Keep the core in reset while the SRAM comes up. */
 	scp_assert_reset(scp);
 
-	/* Power up all TCM banks; the topckgen SCP mux is already on 26M. */
+	/*
+	 * Power up all TCM banks.  The vendor enables the CPU SRAM banks one
+	 * block at a time; keep that sequence to avoid an inrush glitch.
+	 */
+	{
+		u32 mask;
+
+		for (mask = 0xffffffff; mask; ) {
+			mask >>= 1;
+			writel(mask, scp->clkreg + SCP_CLK_CPU0_SRAM_PD);
+			writel(mask, scp->clkreg + SCP_CLK_CPU1_SRAM_PD);
+		}
+	}
 	writel(0, scp->clkreg + SCP_CLK_L1_SRAM_PD);
-	writel(0, scp->clkreg + SCP_CLK_CPU0_SRAM_PD);
-	writel(0, scp->clkreg + SCP_CLK_CPU1_SRAM_PD);
 	writel(0, scp->clkreg + SCP_CLK_TCM_TAIL_SRAM_PD);
 	writel(0, scp->clkreg + SCP_CLK_L2TCM_PD0);
 	writel(0, scp->clkreg + SCP_CLK_L2TCM_PD1);
 	writel(0, scp->clkreg + SCP_CLK_L2TCM_PD2);
 
+	writel(0, scp->clkreg + SCP_CLK_SW_SEL);
+	/* Point the SCP-side mailbox base at the AP data windows. */
+	{
+		u32 i;
+
+		for (i = 0; i < SCP_MAX_MBOX; i++)
+			writel(0x107fb000 + i * 0x1000,
+			       scp->cfg + 0x85020 + i * 4);
+	}
 	/* Clear the SCP->SPM IPC and allow all memory attributes. */
+	writel(1, scp->clkreg + SCP_CLK_ENABLE);
 	writel(0xff, scp->cfg + SCP_CFG_SCP2SPM_IPC_CLR);
 	scp_core_writel(scp, 0, SCP_CORE_MEM_ATT_PREDEF, 0xff);
 
@@ -635,7 +675,7 @@ static int scp_setup_pins(struct scp_dev *scp)
 				last_slot = last_idx;
 			}
 		}
-		last_ofs = last_idx = last_slot = last_sz = 0;
+		/* Vendor mbox_setup_pin_table() continues from the send pins. */
 		for (i = 0; i < scp->recv_count; i++) {
 			struct scp_recv_pin *p = &scp->recv[i];
 			u32 len;
@@ -867,17 +907,19 @@ static int scp_start(struct scp_dev *scp)
 
 	timeout = wait_event_timeout(scp->ready_wq, scp->ready,
 				     msecs_to_jiffies(10000));
+	mutex_lock(&scp->lock);
 	if (!timeout) {
 		dev_err(scp->dev, "SCP did not send ready IPI in 10s\n");
-		scp_dump_regs(scp);
-		mutex_lock(&scp->lock);
 		scp->running = false;
-		scp_assert_reset(scp);
+		if (assert_on_timeout)
+			scp_assert_reset(scp);
+		scp_dump_regs(scp);
 		ret = -ETIMEDOUT;
 	} else {
 		dev_info(scp->dev, "SCP is running\n");
 		ret = 0;
 	}
+	mutex_unlock(&scp->lock);
 	return ret;
 
 out:
@@ -946,21 +988,21 @@ static ssize_t mbox_show(struct device *dev, struct device_attribute *attr,
 	ssize_t n = 0;
 	unsigned int i;
 
-	n += sysfs_emit(buf + n, "mboxes:\n");
+	n += sysfs_emit_at(buf, n, "mboxes:\n");
 	for (i = 0; i < SCP_MAX_MBOX; i++)
-		n += sysfs_emit(buf + n, "  %u base=%p set=%#x clr=%#x irq=%d\n",
+		n += sysfs_emit_at(buf, n, "  %u base=%p set=%#x clr=%#x irq=%d\n",
 				i, scp->mbox[i].base,
 				readl(scp->mbox[i].set), readl(scp->mbox[i].clr),
 				scp->mbox[i].irq);
-	n += sysfs_emit(buf + n, "send pins:\n");
+	n += sysfs_emit_at(buf, n, "send pins:\n");
 	for (i = 0; i < scp->send_count; i++)
-		n += sysfs_emit(buf + n, "  id=%u mbox=%u size=%u off=%u pin=%u\n",
+		n += sysfs_emit_at(buf, n, "  id=%u mbox=%u size=%u off=%u pin=%u\n",
 				scp->send[i].chan_id, scp->send[i].mbox,
 				scp->send[i].msg_size, scp->send[i].offset,
 				scp->send[i].pin_index);
-	n += sysfs_emit(buf + n, "recv pins:\n");
+	n += sysfs_emit_at(buf, n, "recv pins:\n");
 	for (i = 0; i < scp->recv_count; i++)
-		n += sysfs_emit(buf + n, "  id=%u mbox=%u size=%u opt=%u off=%u pin=%u%s\n",
+		n += sysfs_emit_at(buf, n, "  id=%u mbox=%u size=%u opt=%u off=%u pin=%u%s\n",
 				scp->recv[i].chan_id, scp->recv[i].mbox,
 				scp->recv[i].msg_size, scp->recv[i].recv_opt,
 				scp->recv[i].offset, scp->recv[i].pin_index,
@@ -969,11 +1011,102 @@ static ssize_t mbox_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(mbox);
 
+static ssize_t dump_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
+{
+	struct scp_dev *scp = dev_get_drvdata(dev);
+	u8 tcm[64], dram0[64], dram1[64];
+	ssize_t n = 0;
+	int i;
+
+	memcpy_fromio(tcm, scp->tcm, sizeof(tcm));
+	memcpy_fromio(dram0, scp->dram, sizeof(dram0));
+	memcpy_fromio(dram1, scp->dram + SCP_FW_DRAM_OFFSET, sizeof(dram1));
+	n += sysfs_emit_at(buf, n, "TCM+0x0000: ");
+	for (i = 0; i < sizeof(tcm); i++)
+		n += sysfs_emit_at(buf, n, "%02x", tcm[i]);
+	n += sysfs_emit_at(buf, n, "\nDRAM+0x0000: ");
+	for (i = 0; i < sizeof(dram0); i++)
+		n += sysfs_emit_at(buf, n, "%02x", dram0[i]);
+	n += sysfs_emit_at(buf, n, "\nDRAM+0x2000: ");
+	for (i = 0; i < sizeof(dram1); i++)
+		n += sysfs_emit_at(buf, n, "%02x", dram1[i]);
+	n += sysfs_emit_at(buf, n, "\n");
+	return n;
+}
+static DEVICE_ATTR_RO(dump);
+
+#define SCP_LOGGER_OFFSET 0x34e300
+static ssize_t log_show(struct device *dev, struct device_attribute *attr,
+			char *buf)
+{
+	u8 tmp[1024];
+	ssize_t n = 0;
+	int i;
+
+	if (!scp_share_virt)
+		return sysfs_emit(buf, "share memory not mapped\n");
+	memcpy_fromio(tmp, scp_share_virt + SCP_LOGGER_OFFSET + log_offset,
+		      sizeof(tmp));
+	n += sysfs_emit_at(buf, n, "logger @%#x+%#x:\n", SCP_LOGGER_OFFSET,
+			   log_offset);
+	for (i = 0; i < sizeof(tmp); i++) {
+		char c = tmp[i];
+
+		if ((c >= 0x20 && c < 0x7f) || c == '\n' || c == '\t')
+			n += sysfs_emit_at(buf, n, "%c", c);
+		else
+			n += sysfs_emit_at(buf, n, ".");
+		if ((i & 63) == 63)
+			n += sysfs_emit_at(buf, n, "\n");
+	}
+	return n;
+}
+static DEVICE_ATTR_RO(log);
+
+static ssize_t stats_show(struct device *dev, struct device_attribute *attr,
+			  char *buf)
+{
+	struct scp_dev *scp = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "running=%d ready=%d ipi_count=%u last_ipi=%u last_len=%u\n",
+			  scp->running, scp->ready, scp->ipi_count,
+			  scp->last_ipi, scp->last_ipi_len);
+}
+static DEVICE_ATTR_RO(stats);
+
+static ssize_t force_ready_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct scp_dev *scp = dev_get_drvdata(dev);
+	bool val;
+	int ret;
+
+	ret = kstrtobool(buf, &val);
+	if (ret)
+		return ret;
+	if (val) {
+		scp->running = true;
+		scp->ready = true;
+		WRITE_ONCE(scp_platform_ready_state, true);
+		schedule_work(&scp->notify_work);
+		wake_up(&scp->ready_wq);
+		dev_info(scp->dev, "SCP marked ready from userspace\n");
+	}
+	return count;
+}
+static DEVICE_ATTR_WO(force_ready);
+
 static struct attribute *scp_attrs[] = {
 	&dev_attr_state.attr,
 	&dev_attr_start.attr,
 	&dev_attr_regs.attr,
 	&dev_attr_mbox.attr,
+	&dev_attr_dump.attr,
+	&dev_attr_log.attr,
+	&dev_attr_stats.attr,
+	&dev_attr_force_ready.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(scp);
@@ -1014,9 +1147,13 @@ static int scp_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, scp);
 	dev_set_drvdata(&pdev->dev, scp);
 
-	scp->tcm = scp_map_resource(scp, "sram");
-	if (IS_ERR(scp->tcm))
-		return PTR_ERR(scp->tcm);
+	scp->tcm = devm_ioremap_wc(scp->dev,
+				   platform_get_resource_byname(pdev,
+						IORESOURCE_MEM, "sram")->start,
+				   resource_size(platform_get_resource_byname(pdev,
+						IORESOURCE_MEM, "sram")));
+	if (!scp->tcm)
+		return -ENOMEM;
 	scp->cfg = scp_map_resource(scp, "cfg");
 	if (IS_ERR(scp->cfg))
 		return PTR_ERR(scp->cfg);
