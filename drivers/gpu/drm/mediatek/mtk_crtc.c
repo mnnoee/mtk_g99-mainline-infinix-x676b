@@ -6,6 +6,9 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/gpio/consumer.h>
+#include <linux/gpio/machine.h>
+#include <linux/interrupt.h>
 #include <linux/mailbox_controller.h>
 #include <linux/of.h>
 #include <linux/pm_runtime.h>
@@ -92,6 +95,27 @@ struct mtk_crtc {
 	void				*cmd_conv_buf[2];
 	dma_addr_t			cmd_conv_dma[2];
 	unsigned int			cmd_conv_idx;
+	/*
+	 * Snapshot of the plane-0 framebuffer, taken in atomic_begin() where
+	 * the modeset locks are held.  The command-mode worker must not take
+	 * those locks: the atomic commit that waits for the flip completion
+	 * holds them, so locking there deadlocks the commit against itself.
+	 */
+	struct drm_framebuffer		*cmd_fb_cur;
+	dma_addr_t			cmd_fb_cur_addr;
+	spinlock_t			cmd_fb_lock;
+	/* panel TE pin: paces command-mode frames instead of a timer */
+	struct gpio_desc		*te_gpio;
+	int				te_irq;
+	struct device			*te_dev;
+	bool				te_mode;
+	u64				te_count;
+	u64				work_count;
+	u64				trig_count;
+	u64				w_busy;
+	u64				w_nofb;
+	u64				w_upd;
+	u64				w_maxms;
 };
 
 struct mtk_crtc_state {
@@ -151,6 +175,9 @@ static bool cmd_ddp_irq = false;
 static bool cmd_memory_mode = true;
 module_param(cmd_memory_mode, bool, 0644);
 MODULE_PARM_DESC(cmd_memory_mode, "Pull frames through RDMA memory mode (software RGB888 conversion)");
+static bool te_pacing;
+module_param(te_pacing, bool, 0644);
+MODULE_PARM_DESC(te_pacing, "Pace command-mode frames with the panel TE pin instead of a timer");
 static unsigned int cmd_period_ms = 33;
 module_param(cmd_period_ms, uint, 0644);
 MODULE_PARM_DESC(cmd_period_ms, "Command-mode frame period in ms");
@@ -251,34 +278,61 @@ static void mtk_crtc_cmd_mode_convert(struct mtk_crtc *mtk_crtc,
 /*
  * The command-mode tick runs outside any atomic commit, so it must not
  * dereference plane->state directly: fbcon commits replace the state and
- * free the old one concurrently (KASAN: slab-use-after-free in
- * mtk_crtc_cmd_mode_work). Read the state under the plane lock and keep a
- * reference to the framebuffer for as long as it is used.
+ * free the old one concurrently.  Take a snapshot while the modeset locks
+ * are held (atomic_begin) and keep a reference to the framebuffer for as
+ * long as it is used.
  */
-static struct drm_framebuffer *
-mtk_crtc_cmd_mode_get_fb(struct mtk_crtc *mtk_crtc, dma_addr_t *addr)
+static void
+mtk_crtc_cmd_cache_fb(struct mtk_crtc *mtk_crtc)
 {
 	struct drm_plane *plane = &mtk_crtc->planes[0];
-	struct drm_framebuffer *fb = NULL;
+	struct drm_framebuffer *fb = NULL, *old;
+	dma_addr_t addr = 0;
+	unsigned long flags;
 
-	drm_modeset_lock(&plane->mutex, NULL);
-	/*
-	 * The CRTC may have been disabled while this work was waiting for
-	 * the plane lock: atomic_disable() holds it until commit_tail
-	 * returns. Touching the pipeline after power-off wedges the DSI
-	 * FSM, so bail out instead.
-	 */
-	if (!mtk_crtc->enabled)
-		goto out;
 	if (plane->state && plane->state->fb) {
 		fb = plane->state->fb;
-		*addr = drm_fb_dma_get_gem_addr(fb, plane->state, 0);
+		addr = drm_fb_dma_get_gem_addr(fb, plane->state, 0);
 		drm_framebuffer_get(fb);
 	}
-out:
-	drm_modeset_unlock(&plane->mutex);
+
+	spin_lock_irqsave(&mtk_crtc->cmd_fb_lock, flags);
+	old = mtk_crtc->cmd_fb_cur;
+	mtk_crtc->cmd_fb_cur = fb;
+	mtk_crtc->cmd_fb_cur_addr = addr;
+	spin_unlock_irqrestore(&mtk_crtc->cmd_fb_lock, flags);
+
+	if (old)
+		drm_framebuffer_put(old);
+}
+
+static struct drm_framebuffer *
+mtk_crtc_cmd_peek_fb(struct mtk_crtc *mtk_crtc, dma_addr_t *addr)
+{
+	struct drm_framebuffer *fb;
+	unsigned long flags;
+
+	spin_lock_irqsave(&mtk_crtc->cmd_fb_lock, flags);
+	fb = mtk_crtc->cmd_fb_cur;
+	if (fb)
+		drm_framebuffer_get(fb);
+	*addr = mtk_crtc->cmd_fb_cur_addr;
+	spin_unlock_irqrestore(&mtk_crtc->cmd_fb_lock, flags);
 
 	return fb;
+}
+
+static irqreturn_t mtk_crtc_te_isr(int irq, void *data)
+{
+	struct mtk_crtc *mtk_crtc = data;
+
+	if (!mtk_crtc->te_mode || !mtk_crtc->enabled || !mtk_crtc->ddp_comp_nr)
+		return IRQ_HANDLED;
+
+	mtk_crtc->te_count++;
+	schedule_delayed_work(&mtk_crtc->cmd_mode_work, 0);
+
+	return IRQ_HANDLED;
 }
 
 static void mtk_crtc_cmd_mode_work(struct work_struct *work)
@@ -295,9 +349,13 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	if (!mtk_crtc->enabled)
 		return;
 
+	mtk_crtc->work_count++;
+
 	/* Do not touch the pipeline while an atomic commit is applying. */
-	if (mtk_crtc->config_updating)
+	if (mtk_crtc->config_updating) {
+		mtk_crtc->w_upd++;
 		goto resched;
+	}
 
 	/*
 	 * Pace the frames with the hardware.  Reprogramming the RDMA while
@@ -305,10 +363,14 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	 * switch buffers mid-stream, which shows up as the picture jumping
 	 * vertically.  Wait for the next idle window instead of guessing.
 	 */
-	if (mtk_ddp_comp_is_busy(mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1]))
+	if (mtk_ddp_comp_is_busy(mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1])) {
+		mtk_crtc->w_busy++;
 		goto resched;
+	}
 
-	fb = mtk_crtc_cmd_mode_get_fb(mtk_crtc, &addr);
+	fb = mtk_crtc_cmd_peek_fb(mtk_crtc, &addr);
+	if (!fb)
+		mtk_crtc->w_nofb++;
 	if (!mtk_crtc->enabled) {
 		if (fb)
 			drm_framebuffer_put(fb);
@@ -322,13 +384,6 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	 * it from the trigger tick.
 	 */
 	if (cmd_ddp_irq && fb && addr != mtk_crtc->cmd_fb_addr) {
-		struct drm_plane *plane = &mtk_crtc->planes[0];
-
-		drm_modeset_lock(&plane->mutex, NULL);
-		if (plane->state)
-			to_mtk_plane_state(plane->state)->pending.config = true;
-		drm_modeset_unlock(&plane->mutex);
-
 		mtk_crtc->pending_planes = true;
 		mtk_crtc->cmd_fb_addr = addr;
 		need_config = true;
@@ -355,15 +410,7 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 		 * configuration picks up the new address, then let
 		 * mtk_crtc_ddp_irq() below program the pipeline.
 		 */
-		struct drm_plane *plane = &mtk_crtc->planes[0];
-
-		drm_modeset_lock(&plane->mutex, NULL);
-		if (plane->state) {
-			to_mtk_plane_state(plane->state)->pending.config = true;
-			mtk_crtc->pending_planes = true;
-		}
-		drm_modeset_unlock(&plane->mutex);
-
+		mtk_crtc->pending_planes = true;
 		mtk_crtc->cmd_fb_addr = addr;
 		need_config = true;
 	}
@@ -432,10 +479,23 @@ static void mtk_crtc_cmd_mode_work(struct work_struct *work)
 	usleep_range(1000, 2000);
 
 	/* Then ask the DSI for one frame. */
+	mtk_crtc->trig_count++;
 	mtk_ddp_comp_trigger(mtk_crtc->ddp_comp[mtk_crtc->ddp_comp_nr - 1]);
+	{
+		unsigned int d = ktime_ms_delta(ktime_get(), tick_start);
+		if (d > mtk_crtc->w_maxms)
+			mtk_crtc->w_maxms = d;
+	}
 
 resched:
-	if (mtk_crtc->enabled) {
+	if (mtk_crtc->te_mode && !(mtk_crtc->work_count % 120))
+		dev_info(mtk_crtc->base.dev->dev,
+			 "te=%llu work=%llu trig=%llu busy=%llu nofb=%llu upd=%llu maxms=%llu\n",
+			 mtk_crtc->te_count, mtk_crtc->work_count,
+			 mtk_crtc->trig_count, mtk_crtc->w_busy,
+			 mtk_crtc->w_nofb, mtk_crtc->w_upd, mtk_crtc->w_maxms);
+
+	if (mtk_crtc->enabled && !mtk_crtc->te_mode) {
 		/*
 		 * Keep a fixed grid: the next frame starts cmd_period_ms after
 		 * this one did, not cmd_period_ms after the work finished.
@@ -457,6 +517,27 @@ static void mtk_crtc_destroy(struct drm_crtc *crtc)
 	int i;
 
 	cancel_delayed_work_sync(&mtk_crtc->cmd_mode_work);
+
+	/*
+	 * The panel keeps pulsing TE after the CRTC is torn down.  Release the
+	 * IRQ first: drm_crtc_cleanup() clears crtc->dev, and an interrupt
+	 * arriving in between would dereference it.
+	 */
+	if (mtk_crtc->te_irq > 0) {
+		mtk_crtc->te_mode = false;
+		disable_irq(mtk_crtc->te_irq);
+		devm_free_irq(mtk_crtc->te_dev, mtk_crtc->te_irq, mtk_crtc);
+		mtk_crtc->te_irq = -1;
+	}
+	if (mtk_crtc->te_gpio) {
+		gpiod_put(mtk_crtc->te_gpio);
+		mtk_crtc->te_gpio = NULL;
+	}
+
+	if (mtk_crtc->cmd_fb_cur) {
+		drm_framebuffer_put(mtk_crtc->cmd_fb_cur);
+		mtk_crtc->cmd_fb_cur = NULL;
+	}
 	for (i = 0; i < ARRAY_SIZE(mtk_crtc->cmd_conv_buf); i++) {
 		if (mtk_crtc->cmd_conv_buf[i])
 			dma_free_noncoherent(crtc->dev->dev, 1080 * 2400 * 3,
@@ -1214,6 +1295,8 @@ static void mtk_crtc_atomic_begin(struct drm_crtc *crtc,
 	struct drm_device *dev = mtk_crtc->base.dev;
 	unsigned long flags;
 
+	mtk_crtc_cmd_cache_fb(mtk_crtc);
+
 	if (mtk_crtc->event && mtk_crtc_state->base.event)
 		drm_err(dev, "new event while there is still a pending event\n");
 
@@ -1415,6 +1498,12 @@ int mtk_crtc_create(struct drm_device *drm_dev, const unsigned int *path,
 		return -ENOMEM;
 
 	mtk_crtc->mmsys_dev = priv->mmsys_dev;
+
+	/*
+	 * The panel drives a TE pulse at its own refresh rate (60 Hz on this
+	 * panel).  Using it as the frame trigger keeps the DSI in step with
+	 * the panel instead of pushing from a timer.
+	 */
 	mtk_crtc->ddp_comp_nr = path_len;
 
 	/* Packed RGB888 frame for the command-mode RDMA memory path. */
@@ -1432,6 +1521,7 @@ int mtk_crtc_create(struct drm_device *drm_dev, const unsigned int *path,
 					      DMA_TO_DEVICE, GFP_KERNEL);
 	}
 	INIT_DELAYED_WORK(&mtk_crtc->cmd_mode_work, mtk_crtc_cmd_mode_work);
+	spin_lock_init(&mtk_crtc->cmd_fb_lock);
 	mtk_crtc->ddp_comp = devm_kcalloc(dev,
 					  mtk_crtc->ddp_comp_nr + (conn_routes ? 1 : 0),
 					  sizeof(*mtk_crtc->ddp_comp),
@@ -1520,11 +1610,30 @@ int mtk_crtc_create(struct drm_device *drm_dev, const unsigned int *path,
 						 i,
 						 &mtk_crtc->cmdq_event);
 		if (ret) {
+			/*
+			 * The X676B DT carries the vendor "gce-events" list on
+			 * the display node, not the mainline property on the
+			 * mutex node.  Use the first three events of that list:
+			 * they are the MUTEX SOF events of CRTC 0..2.
+			 */
+			static const u32 x676b_mutex_events[] = {
+				0x1b2, 0x280, 0x1c2
+			};
+
+			if (i < ARRAY_SIZE(x676b_mutex_events)) {
+				mtk_crtc->cmdq_event = x676b_mutex_events[i];
+				ret = 0;
+			}
+		}
+		if (ret) {
 			dev_dbg(dev, "mtk_crtc %d failed to get mediatek,gce-events property\n",
 				drm_crtc_index(&mtk_crtc->base));
 			mbox_free_channel(mtk_crtc->cmdq_client.chan);
 			mtk_crtc->cmdq_client.chan = NULL;
 		} else {
+			dev_info(dev, "mtk_crtc %d: CMDQ active, event 0x%x\n",
+				 drm_crtc_index(&mtk_crtc->base),
+				 mtk_crtc->cmdq_event);
 			ret = cmdq_pkt_create(&mtk_crtc->cmdq_client,
 					      &mtk_crtc->cmdq_handle,
 					      PAGE_SIZE);
@@ -1565,5 +1674,35 @@ int mtk_crtc_create(struct drm_device *drm_dev, const unsigned int *path,
 		mtk_crtc->ddp_comp_nr++;
 	}
 
+	/*
+	 * The "te-gpios" property lives on the mmsys node, but the GPIO and the
+	 * IRQ must be owned by this module: the mmsys device belongs to a
+	 * different driver, so devm resources attached to it would survive an
+	 * rmmod of mediatek_drm and leave a dangling interrupt handler behind.
+	 */
+	if (te_pacing) {
+		mtk_crtc->te_gpio = fwnode_gpiod_get_index(
+			of_fwnode_handle(mtk_crtc->mmsys_dev->of_node),
+			"te", 0, GPIOD_IN, "x676b-te");
+		if (IS_ERR(mtk_crtc->te_gpio))
+			mtk_crtc->te_gpio = NULL;
+	}
+	if (mtk_crtc->te_gpio) {
+		mtk_crtc->te_dev = dev;
+		mtk_crtc->te_irq = gpiod_to_irq(mtk_crtc->te_gpio);
+		if (mtk_crtc->te_irq > 0) {
+			if (!devm_request_irq(dev, mtk_crtc->te_irq,
+					      mtk_crtc_te_isr,
+					      IRQF_TRIGGER_RISING,
+					      "x676b-te", mtk_crtc)) {
+				mtk_crtc->te_mode = true;
+				dev_info(dev, "command mode frames paced by TE (irq %d)\n",
+					 mtk_crtc->te_irq);
+			} else {
+				mtk_crtc->te_irq = -1;
+			}
+		}
+	}
+	
 	return 0;
 }
