@@ -1003,4 +1003,16 @@ config INPUT_STPMIC1_ONKEY
 	  To compile this driver as a module, choose M here: the
 	  module will be called stpmic1_onkey.
 
+config INPUT_AW8622X_HAPTIC
+	tristate "Awinic AW8622x LRA haptic driver"
+	depends on I2C
+	select INPUT_FF_MEMLESS
+	help
+	  Say Y here to enable the Awinic AW8622x (AW86224/AW86225) haptic
+	  driver.  It exposes a "vibrator" LED and an input force feedback
+	  device, and drives the LRA in continuous mode.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called aw8622x-haptic.
+
 endif
