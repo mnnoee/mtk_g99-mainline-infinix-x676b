@@ -987,6 +987,14 @@ bool mtk_dsi_ddp_is_busy(struct device *dev)
 {
 	struct mtk_dsi *dsi = dev_get_drvdata(dev);
 
+	/*
+	 * In the vendor frame-trigger mode BUSY is cleared by the engine
+	 * reset inside the trigger itself, so reporting it here would block
+	 * the very trigger that has to clear it.
+	 */
+	if (cmd_vendor_trigger)
+		return false;
+
 	return !!(readl(dsi->regs + DSI_INTSTA) & DSI_BUSY);
 }
 
