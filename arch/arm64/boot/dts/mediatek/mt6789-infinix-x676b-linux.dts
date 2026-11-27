@@ -359,7 +359,24 @@
 
 				power-domain@a {
 					reg = <0x0a>;
-					#power-domain-cells = <0x00>;
+					mediatek,infracfg = <0x11>;
+					#address-cells = <0x01>;
+					#size-cells = <0x00>;
+					#power-domain-cells = <0x01>;
+
+					power-domain@6 {
+						reg = <0x06>;
+						mediatek,infracfg = <0x11>;
+						#power-domain-cells = <0x00>;
+					};
+
+					power-domain@c {
+						reg = <0x0c>;
+						mediatek,infracfg = <0x11>;
+						#address-cells = <0x01>;
+						#size-cells = <0x00>;
+						#power-domain-cells = <0x01>;
+					};
 				};
 			};
 		};
@@ -1512,6 +1529,14 @@
 					bias-disable;
 				};
 			};
+
+			cam0_mclk_pins: cam0-mclk-pins {
+				pins_cmd_dat {
+					pinmux = <0x7f01>;
+					slew-rate = <0x01>;
+					drive-strength = <0x04>;
+				};
+			};
 		};
 
 		serial@11002000 {
@@ -1813,6 +1838,24 @@
 			1,code = <0x73>;
 			mediatek,matrix-val = <0xdfef>;
 			mediatek,matrix-reg = <0x0c>;
+			status = "okay";
+		};
+
+		syscon@1a000000 {
+			compatible = "mediatek,mt6789-camsys", "syscon";
+			reg = <0x1a000000 0x1000>;
+			#clock-cells = <0x01>;
+			phandle = <0x2f0>;
+		};
+
+		cam-mclk@1a004000 {
+			compatible = "infinix,x676b-cam-mclk";
+			reg = <0x1a004000 0x6000>;
+			power-domains = <0x23 0x06>, <0x23 0x0c>;
+			clocks = <0x10 0x6a>, <0x2f0 0x03>, <0x2f0 0x04>;
+			clock-names = "camtg-sel", "camtg", "seninf";
+			pinctrl-names = "default";
+			pinctrl-0 = <&cam0_mclk_pins>;
 			status = "okay";
 		};
 	};
