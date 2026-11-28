@@ -103,6 +103,7 @@ struct mtk_md1 {
 	u32 boot_status0;
 	u32 boot_status1;
 	bool clks_on;
+	bool rails_on;
 	bool powered;
 };
 
@@ -132,6 +133,8 @@ static int md1_regulators_on(struct mtk_md1 *md)
 {
 	int ret;
 
+	if (md->rails_on)
+		return 0;
 	ret = regulator_set_voltage(md->vmodem, 825000, 825000);
 	if (ret)
 		return ret;
@@ -148,6 +151,7 @@ static int md1_regulators_on(struct mtk_md1 *md)
 	ret = regulator_enable(md->vsram);
 	if (ret)
 		return ret;
+	md->rails_on = true;
 	msleep(10);
 	dev_info(md->dev, "rails vmodem=%d vsram=%d uV\n",
 		 regulator_get_voltage(md->vmodem),
@@ -405,9 +409,14 @@ static int md1_let_go(struct mtk_md1 *md)
 static int md1_trigger(struct mtk_md1 *md, unsigned int ch)
 {
 	int i, rchnum = 0;
+	u32 busy;
 
 	md->last_rch = 0;
-	writel(1 << ch, md->ccif_ap + CCIF_AP_BUSY);
+	busy = readl(md->ccif_ap + CCIF_AP_BUSY);
+	if (!(busy & BIT(ch))) {
+		writel(BIT(ch), md->ccif_ap + CCIF_AP_BUSY);
+		writel(ch, md->ccif_ap + CCIF_AP_TCHNUM);
+	}
 	for (i = 0; i < 2000; i++) {
 		rchnum = readl(md->ccif_md + CCIF_AP_RCHNUM);
 		if (rchnum)
@@ -459,18 +468,30 @@ static int md1_boot(struct mtk_md1 *md)
 
 	dev_info(md->dev, "=== MD1 boot sequence start ===\n");
 	md1_dump(md, "pre");
-	md1_power_off(md);
-	md1_dump(md, "off");
+
+	/*
+	 * Stock order: LK leaves MD powered; the kernel initializes CCIF
+	 * while the domain is on, then power-cycles it and releases the
+	 * boot vector.  Writes to the CCIF SRAM are only accepted in the
+	 * powered state.
+	 */
+	ret = md1_power_on(md);
+	if (ret)
+		return ret;
+	md1_dump(md, "on1");
 
 	ret = md1_ccif_start(md, true);
 	if (ret)
 		return ret;
 	md1_dump(md, "ccif");
 
+	md1_power_off(md);
+	md1_dump(md, "off2");
+
 	ret = md1_power_on(md);
 	if (ret)
 		return ret;
-	md1_dump(md, "on");
+	md1_dump(md, "on2");
 
 	ret = md1_let_go(md);
 	md1_dump(md, "letgo");
