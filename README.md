@@ -1,139 +1,88 @@
 # Mainline Linux for Infinix Note 12 Pro (X676B, MediaTek MT6789 / Helio G99)
 
 Fork of [ellyq/mtk_g99-mainline](https://gitlab.postmarketos.org/ellyq/mtk_g99-mainline)
-with support for the **Infinix Note 12 Pro (X676B)** added.
+with the X676B device support maintained here:
 
-Device: MT6789 (Helio G99), 8 GiB RAM, 256 GiB UFS, 1080x2400 AMOLED.
-Bootloader: U-Boot packed into the stock LK partition (separate tree,
-`u-boot-mtk-g99` / `x676b_tools_linux`). Root filesystem: a Linux
-distribution on a UFS partition.
+* repository: `git@github.com:mnnoee/mtk_g99-mainline-infinix-x676b.git`
+* branch: `master`
+* kernel: `7.0.0-x676b+`, Arch Linux ARM root filesystem
 
-## Status (tested on hardware)
+The phone boots from U-Boot (packed into the stock LK partition) with the
+kernel and DTB stored as files on the ext4 `tranfs` partition; the root
+filesystem is on a microSD card.  USB (ACM + RNDIS) and WiFi provide the
+management link.
 
-### Works
+## Current status (2026-11-28)
 
-| Kernel capability | Notes |
+### Works (confirmed on hardware)
+
+| Capability | Notes |
 |---|---|
-| Boot from UFS | root filesystem on a UFS partition (`root=PARTUUID=...`); a second UFS partition works as an alternative root |
-| RAM | full 8 GiB across two banks |
-| UFS | block device, read/write |
-| SD card (MSDC1) | `mmc0`: SDXC, 50 MHz / 4-bit, card-detect hotplug (insert and remove) |
-| USB | Type-C composite gadget (ACM console + RNDIS) and OTG host with role switch |
-| PMIC | MT6366 via pwrap: regulators, RTC, power/reset keys, ADC |
-| Charger / battery | RT9471 charger driver: status, current/voltage limits, BC1.2, OTG boost; `mt6358_battery` (voltage + OCV estimate) |
-| CPU frequency | two clusters: 6x A55 up to 2.0 GHz, 2x A76 up to 2.2 GHz, schedutil |
-| Thermal | MT6789 LVTS, 13 zones, 110 C critical trips |
-| Display | `mediatek-drm` + `mtk_dsi` + `panel-ilitek-ili7835`: 1080x2400 AMOLED, command mode, RDMA memory mode, 33 ms tick (~30 fps); fbdev emulation on `/dev/fb0` |
-| GPU | Panfrost binds Mali-G57 MC2: GLES 3.1 feature set, ~135 GFLOPS FP32 at 1.1 GHz; no Vulkan (PanVK does not support this GPU) |
-| Audio | MT6789 AFE + MT6358/MT6366 codec: playback to the bottom speaker (LoudSPK path) |
-| Wi-Fi | CONNSYS MT6631 with the ported gen4m driver: scan on 2.4/5 GHz, WPA2-PSK/SAE, ~48 Mbit/s |
-| Bluetooth | `hci_stp` (HCI over WMT/STP): BR/EDR and LE, pairing, RFCOMM/L2CAP sockets |
-| FM radio | MT6631 tuner via WMT/STP: power-up, tuning, RSSI, band scan |
-| GNSS | `gps_stp` STP transport (L1): NMEA at 1 Hz, satellites and C/N0 visible |
-| KASAN | the tree doubles as a KASAN bring-up target: several real bugs were found and fixed here (see "Bugs found with KASAN") |
+| Boot | U-Boot → `Image.x676b` + `x676b.dtb` from ext4 on tranfs; rootfs on microSD; systemd; SSH over USB and WiFi |
+| Display | `mediatek-drm` + `mtk_dsi` + `panel-ilitek-ili7835`, 1080×2400, **60.8 fps** (16.45 ms/frame), TE-paced, DSI 1120 Mbit/s/lane, RDMA memory mode, 32bpp |
+| Weston | DRM backend + GL renderer (Panfrost), `weston-terminal`, `weston-simple-egl`, 60 fps |
+| GPU | Panfrost Mali-G57 MC2, EGL 1.5, OpenGL 3.1, OpenGL ES 3.1 (GLSL ES 3.10) |
+| Touch | FocalTech FT5x06 (`edt_ft5x06`), i2c 0-0038 |
+| Volume keys | `mt6779-keypad`, row 4 col 0/1 → `KEY_VOLUMEUP` / `KEY_VOLUMEDOWN`; **volume up wakes from suspend** |
+| WiFi | MT6631 via WMT/`wlan_gen4m`, 2.4/5 GHz, static `10.0.16.115`, ~60 Mbit/s |
+| Bluetooth | `hci_stp` + WMT, `hci0` `C4:64:F2:87:1F:80`, BR/EDR + LE, LE scan, pairing/OBEX |
+| USB | Type-C device role, composite ACM + RNDIS gadget, `10.42.0.13` |
+| Flash | OCP81375 main/aux channels, torch levels 1–6, off |
+| Haptic | AW8622x, timed pulses, stop |
+| Battery/charger | `mt6358_battery` (voltage/status/capacity), `rt9471` charger online |
+| Thermal | MT6789 LVTS, 13 zones, 34–64 °C under load, no throttling |
+| CPU | 6× A55 up to 2.0 GHz, 2× A76 up to 2.2 GHz; 8× load stable |
+| RAM | 8 GiB physical, ~6.69 GiB visible after reservations; 1 GiB test passed |
+| microSD | rootfs, 100 MB write ≈ 19.8 MB/s, no mmc errors |
+| Watchdog/RTC/PMIC | `mtk_wdt`, `mt6397-rtc`, MT6366 PMIC |
+| Suspend | s2idle; RTC wake and volume-up wake verified (7 s in the button test) |
 
-### Partial / not working
+### Partial
 
-| Kernel capability | Notes |
+| Capability | What works | Limitation |
+|---|---|---|
+| GPU performance | hardware GLES 3.1 | devfreq stays at 390 MHz; glmark2 score 16 |
+| Audio | card `mt6789-mt6366`, mixer controls | playback returns `-112 EHOSTDOWN` |
+| FM radio | MT6631 tuner, TUNE/RSSI | no antenna/audio path |
+| GNSS | `gps_stp`, WMT `FUNC_ON(2)`, `/dev/stpgps` | no fix: needs `mnld`, LNA GPIO25 not in DT |
+| USB Type-C | device role, charging | host/OTG role not tested (no adapter) |
+| PMIC power key | input device registered | MT6366 key IRQ does not fire (MT6358 vs MT6366 registers) |
+| SCP / SensorHub | SCP firmware booted once; AP→SCP control works; IIO reads share-memory ring; synthetic accel/mag/light/prox tested | SCP→AP mailbox IRQ missing; live sensors blocked until SCP can be restarted (needs full power cycle) |
+| UFS | read-only use of tranfs for kernel/DTB | no destructive tests by policy; rootfs is on microSD |
+
+### Not working
+
+| Capability | Reason |
 |---|---|
-| Top (earpiece) speaker | only the bottom speaker path is wired up |
-| Speaker amp I2C | RT5512/FS1559 at `i2c6 0x5c` and the gate IC `0x11` do not ACK; audio works in analog passthrough |
-| Battery gauge | no FGADC driver: no current or coulomb counter, capacity is a voltage/OCV estimate |
-| Modem | vendor-only stack, not started from mainline |
-| Camera | no driver |
-| Touchscreen / local input | no driver yet |
-| cpuidle / suspend | not implemented, not tested |
-| FM / BT audio | audio routing for those profiles is missing |
-| 60 Hz display | the 1006 Mbit/s D-PHY link has no margin for a 16.6 ms frame |
+| Cameras | no mainline camsys MT6789 driver |
+| Modem (MD1) | vendor-only power sequence; `PWR_ACK` not obtained |
+| Full SensorHub | SCP→AP IPI path not implemented; host sensorhub stack only partially ported |
+| Audio playback | AFE/codec path returns `EHOSTDOWN` |
 
-## Where the numbers and register values come from
+## Device tree and DTB — one source
 
-Every constant in this tree has a traceable origin; none of it was invented:
+The only device tree source is:
 
-* **Disassembly of the stock bootloader.** The `lk_a` partition was dumped
-  from the device and disassembled with Ghidra.
-  The DSI command sequences, OVL/RDMA/mutex programming, the panel init
-  table, EMI MPU encoding and the display clock/power gates come from that
-  code.
-* **Disassembly of the ATF/TEE image.** The `tee_a` dump was analysed for
-  the EMI MPU register encoding, the SMC entry points and the secure power
-  domain handling.
-* **A live Android system on the same phone.** Registers, clocks, power
-  domains, DSI state and the Wi-Fi/BT/FM/GPS bring-up were read and
-  cross-checked on the running stock firmware (sysfs, debugfs, `/proc`,
-  logcat, WMT/connsys logs), and used as the reference behaviour.
-* **Vendor kernel sources (MediaTek BSP 5.10).** Driver behaviour and data
-  tables were ported from the public MT6789 downstream trees: MMSYS
-  routing, pm-domains, clocks, AFE, LVTS, CONNSYS/WMT, gen4m, fmradio and
-  the GPS STP transport.
-* **Device dumps.** DTB/DTBO from `vendor_boot`, firmware images from
-  `/vendor/firmware` and partition dumps give the device-specific nodes,
-  firmware blobs and the reserved-memory layout.
-* **Upstream mainline.** Base drivers, DT bindings and subsystem APIs come
-  from mainline; where MT6789-specific data was missing it was filled in
-  from the sources above.
-* **Measurements on this board.** Timing and performance numbers (30 fps
-  tick, 5.7 ms frame conversion, 135 GFLOPS, 48 Mbit/s, thermal behaviour)
-  were measured on the device, not taken from a datasheet.
-
-## Device tree and DTB
-
-* `arch/arm64/boot/dts/mediatek/mt6789-infinix-x676b-linux.dts` — upstream-style
-  DTS (kbuild).
-* `arch/arm64/boot/dts/mediatek/mt6789-infinix-x676b-live.dts` — flattened DTS
-  actually used on the device (PMIC, LVTS, audio, SD, display/DRM,
-  reserved-memory).
-* `arch/arm64/boot/dts/mediatek/mt6789-infinix-x676b-live.dtb` — the prebuilt
-  DTB that boots and works with this tree (the same blob the board loads);
-  `dtc` on the `-live.dts` above reproduces it byte for byte.
-
-Build the DTB with `dtc` (not kbuild):
-
-```sh
-dtc -I dts -O dtb -o mt6789-infinix-x676b-live.dtb mt6789-infinix-x676b-live.dts
+```
+arch/arm64/boot/dts/mediatek/mt6789-infinix-x676b-linux.dts
 ```
 
-The DTS comments are in English so the reasoning is clear to other readers.
+Build it with kbuild:
 
-## Display
+```sh
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- dtbs
+```
 
-The panel is an Ilitek ILI7835 1080x2400 AMOLED in MIPI DSI command mode.
-The kernel drives it through the mainline MediaTek DRM stack; the panel
-driver (`drivers/gpu/drm/panel/panel-ilitek-ili7835.c`) is part of this
-tree.
+and deploy the result to the board as `/mnt/x676b.dtb`:
 
-* **Pipeline**: `mediatek-drm` with the MT6789 components —
-  OVL0, RDMA0 (memory mode), DITHER0, DSI0 — plus `mtk-mmsys`,
-  `mtk-mutex`, the MT6789 D-PHY and `clk-mt6789-mm`.  Routing lives in
-  `drivers/soc/mediatek/mt6789-mmsys.h`.
-* **Command-mode tick**: the panel has no hardware vblank, so
-  `mtk_crtc_cmd_mode_work()` converts the fbcon XRGB8888 buffer to
-  packed RGB888 (NEON), hands it to RDMA in memory mode and sends DCS
-  `0x2C` once per period (`cmd_period_ms`, 33 ms by default).
-* **Buffers**: MTK GEM buffers and the conversion buffer are cacheable
-  non-coherent DMA memory (`dma_alloc_noncoherent()`), so the CPU
-  conversion costs ~5.7 ms per frame (~14% of one core at 30 fps).
-  Write-combined memory made the fb reads 8x slower.
-* **Panel driver**: ILI7835 init sequence, reset/bias GPIOs (85/64),
-  DCS `0x11`/`0x29` and `0x51` brightness via the backlight device.
-* **Not used**: the direct OVL to RDMA path (`cmd_memory_mode=0`) does
-  not survive repeated software triggers without GCE/TE, so frames go
-  through RDMA memory mode.
+```
+.../mt6789-infinix-x676b-linux.dtb
+```
 
-See `Documentation/x676b.rst` for the driver/parameter details and the
-known limitations (60 Hz does not fit the 1006 Mbit/s D-PHY link yet).
-
-## SD card (MSDC1)
-
-* Controller `11240000.mmc`, driver `mtk-sd` (`CONFIG_MMC_MTK=m`), host `mmc0`.
-* Tested with a 128 GiB SDXC card: `mmc0: new high speed SDXC card at address
-  b368`, `mmcblk0: mmc0:b368 SDABC 117 GiB`; 50 MHz clock (48 MHz actual),
-  4-bit bus, 3.3 V, SD high-speed timing, `/dev/mmcblk0` and
-  `/dev/mmcblk0p1`.
-* Card detect is an active-high GPIO routed through EINT (GIC SPI 244), so
-  insertion and removal are hotplug events.
-* A single `mmc0: error -84 whilst initialising SD card` at boot is the first
-  CMD8 attempt; the retry succeeds and the card enumerates normally.
+Do not add `-live`, `-kms` or other parallel DTS variants.  Historical
+DTBs are kept only in `work/dtb-archive/` on the host and are not used
+for booting.  The single source covers PMIC, keypad, LVTS, audio, SD,
+UFS, display/DRM, reserved-memory, WiFi and the (disabled) SCP node.
 
 ## Building
 
@@ -142,91 +91,117 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 make ARCH=arm64 -j12 Image modules
 ```
 
-Important configuration choices for this device:
+Important configuration choices:
 
 * `CONFIG_LOCALVERSION="-x676b"` and `CONFIG_LOCALVERSION_AUTO=n` — keeps
   the module vermagic stable (`7.0.0-x676b+`) across commits.
-* `CONFIG_MMC_MTK=m` — the SD driver is a module, so it can be rebuilt and
-  reloaded without a new `Image`.
-* `CONFIG_DRM_SIMPLEDRM=m`, the MT6789 AFE/machine/codec drivers are modules
-  as well, for the same reason.
+* `CONFIG_MMC_MTK=m` — SD driver is a module.
+* `CONFIG_DRM_SIMPLEDRM=m` and the MT6789 AFE/machine/codec drivers are
+  modules as well.
+* `CONFIG_KEYBOARD_MT6779=m` — volume keypad.
+* `CONFIG_MTK_SCP_TINYSYS=m` and `CONFIG_MTK_X676B_SENSORHUB=m` — the
+  experimental SCP/SensorHub stack (see below).
 
-## Changes over upstream
+On the board `/lib` is a symlink to `/usr/lib`; install modules to
+`/usr/lib/modules/7.0.0-x676b+/...` and run `depmod -a`.
 
-* **Display**: MT6789 MMSYS routing and mutex tables, DSI command-mode
-  quirks (`reg_cmdq_off=0xd00`, PSCTRL, CMD_DONE polling), the ILI7835
-  panel driver, RDMA memory-mode support, the command-mode frame tick and
-  cacheable GEM buffers.
-* **Sound**: MT6789 AFE driver (`sound/soc/mediatek/mt6789/`), machine driver
-  `mt6789-mt6366`, MT6358 codec integration, RT5512 amplifier driver
-  (from the 2022-10-13 LKML patch), 18 AFE pin states, bit-banding memif
-  support in the common AFE code.
-* **Power domains**: MT6789 `pmdomain` table ported from the vendor tree,
-  including the AUDIO domain required by the AFE.
-* **SD (MSDC1)**: fixed the slot on X676B — drive-strength/pull values,
-  real PMIC LDOs for VDD/VccQ, active-high card detect, correct EINT SPI
-  (244) so card-detect and PMIC interrupts are delivered.
-* **MMC**: `mtk-sd` no longer stores the DMA mask in driver-private memory,
-  fixing a KASAN use-after-free on unbind/rebind.
-* **Thermal**: `thermal: mediatek: lvts` MT6789 support — 4 controllers,
-  13 sensors, filtered mode, vendor calibration handling.
-* **Clock / reset**: `infra_ao` reset offset fix (KASAN out-of-bounds),
-  audiosys clock driver now populates the AFE child device.
-* **DTS**: Infinix X676B device nodes, reserved-memory (`ranges;`),
-  `display-fb` DMA pool for the scanout buffer, GPIO hogs for the speaker
-  amp power/enable, prebuilt DTB.
-* **Connectivity**: out-of-tree ports of the vendor CONNSYS stack used by
-  this device — WMT/STP, BTIF, gen4m Wi-Fi, `hci_stp` (HCI over STP) and
-  `gps_stp` — plus the vendor `mnld`/fmradio userspace.
+## Booting
 
-## Bugs found with KASAN
+The board always stops at the U-Boot prompt after a reboot.  From the
+host (`/dev/ttyACM0`):
 
-* **Display command-mode tick deadlock.** `cancel_delayed_work_sync()` in
-  `atomic_disable()` against the tick that takes `plane->mutex`: any
-  `fb_blank` (console blanking or a fbdev client) froze a process in D
-  state. The tick
-  now stops with a flag and a non-blocking cancel.
-* **`mtk-mutex` NULL dereference.** `of_find_device_by_node()` returns the
-  platform device before its driver probes, so `dev_get_drvdata()` could be
-  NULL during `mtk_drm_bind()`; an intermittent boot panic. Now
-  `-EPROBE_DEFER` until the data is there.
-* **`pinctrl-mt6789` out-of-bounds read.** `mt6789_pull_type[]` had 188
-  entries for 222 pins, so `mtk_pinconf_bias_get_combo()` read past the
-  array for GPIO188..221. The table is complete now.
+```sh
+cd x676b_tools_linux
+python3 boot_arch.py          # ext4 kernel/DTB, rootfs on microSD
+```
 
-## Documentation
+Useful environment overrides: `ADTB=x676b.dtb`, `AIMG=Image.x676b`.
+The default DTB on `/mnt` is the consolidated `x676b.dtb`.
 
-* `Documentation/x676b.rst` — X676B kernel support: device tree, display
-  drivers, module parameters, known limitations.
-* `Documentation/sound/mediatek/mt6789-x676b-audio.md` — audio bring-up
-  notes and the AFE/codec/amp wiring.
-* `Documentation/sound/mediatek/mt6789-x676b-refs/` — RT5512 LKML patch and
-  the DS5512B datasheet.
+## Display
 
-The wider project notes (display bring-up, USB, storage, every workaround
-with its rationale) live outside this kernel tree in `docs/AGENTS/` and
-`docs/hacks/`.
+The panel is an Ilitek ILI7835 1080×2400 AMOLED in MIPI DSI command
+mode.  The current stack reaches 60.8 fps with TE pacing:
+
+* Pipeline: `mediatek-drm` — OVL0, RDMA0 (memory mode), DITHER0, DSI0,
+  `mtk-mmsys`, `mtk-mutex`, MT6789 D-PHY, `clk-mt6789-mm`.
+* The panel TE signal paces the frame; `cmd_fast_trigger=1` lets the
+  DSI trigger on TE while the next frame is prepared.  DSI runs at
+  1120 Mbit/s per lane; `cmd_sync_enable=0` keeps the fbdev buffer
+  write-combined.
+* RDMA is reprogrammed when the address, pitch or format changes; the
+  32bpp mapping follows the vendor table (XRGB8888/ARGB8888 →
+  RGBA8888, RGBX/RGBA → ARGB8888).
+* Weston uses the DRM backend with the Panfrost GL renderer; 60 fps.
+
+## Keypad
+
+* `mt6779-keypad` at `0x10010000`, 8×9 matrix, 26 MHz `kpd` clock,
+  IRQ 106.  Keymap: row 4 col 0 = `KEY_VOLUMEUP`, row 4 col 1 =
+  `KEY_VOLUMEDOWN`.
+* Both volume keys report press/release; `wakeup-source` makes volume
+  up wake the board from s2idle (verified, ~7 s vs a 300 s RTC alarm).
+* The PMIC power key is described (`mt6358-keys` + `power` child with
+  `KEY_POWER`, `wakeup-source`) but its IRQ does not fire yet: the
+  PMIC is an MT6366 and needs its own key registers rather than the
+  MT6358 defaults.
+
+## SCP / SensorHub (experimental)
+
+The tinysys SCP is a separate RV55 core; its stock firmware is a
+MediaTek container, not an ELF.  Current state:
+
+* `drivers/soc/mediatek/mtk-scp-tinysys.c` — firmware parser, TCM/DRAM
+  layout, reset/power, mailbox/IPI transport, reserve-memory API.
+* `drivers/misc/mediatek/sensorhub/` — ported vendor SensorHub 2.0
+  (`hf_manager`, `ipi_comm`, `sensor_comm`, `sensor_list`,
+  `transceiver`, `share_memory`, `timesync`, `debug`, `custom_cmd`).
+* SCP boot was achieved once via the ATF SMC release; the logger shows
+  the mailbox init, 250 MHz clock, MXC4005X and the transceiver.
+  AP→SCP control works.  SCP→AP mailbox IRQ is still missing.
+* `drivers/iio/accel/x676b-scp-accel.c` bypasses the missing IPI and
+  polls the SCP share-memory ring.  It exposes accel, magnetometer,
+  light and proximity; synthetic ring tests pass
+  (`in_accel 9800/-268/229`, `in_magn 300/-200/450`,
+  `in_illuminance 1234`, `in_proximity 1`).
+* Live sensor data requires the SCP to be running; after the mbox
+  crash the SCP no longer restarts without a full power cycle.
+* Debug: `/sys/kernel/debug/x676b_scp_accel` dumps the sensor list and
+  the last ring records.
+
+## Recent X676B work
+
+* `e2ad5b7d2` — keypad + PMIC power key nodes.
+* `61bcfe9c1`, `792fbea5d` — removed the stale `-live` DTS/DTB; one
+  DTS/DTB source.
+* `1cca984fa` — wrapped-ring handling in the IIO driver.
+* `d3445c632` — magnetometer, light and proximity channels.
+* `f8306e6ab` — accel uses `value[0..2]` and the sensor gain.
+* `2705235df` — share-memory accelerometer IIO driver.
+* `ed50a2ad6` — debugfs ring/list dump.
+* `08fbb4dc7` — vendor mailbox pin packing (send→recv accumulator).
+* `f23d2dd9e`, `bdbdd0544` — tinysys SCP loader and awake/SMC release.
+* `53b27fa6c` — SensorHub 2.0 transport import.
+
+## Where the numbers and register values come from
+
+* Disassembly of the stock bootloader (`lk_a`), vendor kernel sources
+  (`mt6789`, `scp`, `sensorhub`) and device dumps (DTB/DTBO, firmware).
+* Upstream MediaTek drivers and bindings for MT8192/MT8183/MT8195 as
+  the reference for the SCP/MMSYS/LVTS blocks.
+* Hardware tests on the X676B: display timings, thermal zones, PMIC,
+  charger, WiFi/BT/FM/GPS, keypad, suspend/resume.
 
 ## Sources and credits
 
-Nothing here was invented from scratch: the device support is assembled from
-the following projects, all GPL-2.0.
-
-| What | Where |
+| Area | Source |
 |---|---|
-| Base kernel tree | [ellyq/mtk_g99-mainline](https://gitlab.postmarketos.org/ellyq/mtk_g99-mainline) (this fork's upstream) |
-| MT6789 LVTS sensor map, calibration offsets and coefficients | [linux-mediatek/linux](https://github.com/linux-mediatek/linux) — `drivers/thermal/mediatek/lvts_thermal.c`, `include/dt-bindings/thermal/mediatek,lvts-thermal.h` (MT6789 patchset), `arch/arm64/boot/dts/mediatek/mt6789.dtsi` |
-| Vendor LVTS behaviour (4 controllers, filtered mode, efuse layout, RCK calibration) | [adomerle/android_kernel_mediatek_mt6789](https://github.com/adomerle/android_kernel_mediatek_mt6789), branch `alps-mp-s0.mp1`, files `drivers/thermal/mediatek/soc_temp_lvts.c` and `soc_temp_lvts.h` |
-| MT6789 AFE and MT6358 codec behaviour | MediaTek MT6789 downstream sources (`sound/soc/mediatek/mt6789/`, `sound/soc/codecs/mt6358.c`) |
-| RT5512 amplifier driver | LKML patch "ASoC: rt5512: add RT5512 codec driver" (2022-10-13), included in `Documentation/sound/mediatek/mt6789-x676b-refs/` |
-| SoC register map, PMIC (MT6366), display and UFS bring-up | MediaTek MT6789 downstream sources and device dumps (stock DTB/DTBO, `mt6789.dtsi`, MTK kernel headers) |
-| Device-specific nodes (panel, reserved-memory, keys, USB, audio, SD) | Dumped from the stock firmware of the Infinix X676B (DTB/DTBO from the `vendor_boot` partition) |
-
-The MT6789 thermal driver code in this tree is a port of the vendor
-`soc_temp_lvts.c` data tables into the mainline `lvts_thermal` driver, adapted
-to the mainline calibration API. The MT6789 AFE driver is a trimmed port of the
-vendor `mt6789-afe-pcm.c` onto the mainline `mtk-afe-*` framework.
+| Base tree | [ellyq/mtk_g99-mainline](https://gitlab.postmarketos.org/ellyq/mtk_g99-mainline) |
+| MT6789 display/MMSYS/DSI | mainline MediaTek DRM, vendor MT6789 sources, X676B dumps |
+| LVTS thermal | `linux-mediatek/linux`, `adomerle/android_kernel_mediatek_mt6789` |
+| SCP / SensorHub | vendor MT6789 Android 5.10 sources, `re_sensor`/`re_scp` reverse engineering |
+| Keypad / PMIC | mainline `mt6779-keypad`, `mtk-pmic-keys`, vendor MT6366 data |
 
 ## License
 
-GPL-2.0, same as the Linux kernel. See `COPYING` and `LICENSES/`.
+GPL-2.0-only, matching the upstream kernel.
