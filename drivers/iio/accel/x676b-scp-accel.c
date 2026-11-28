@@ -45,10 +45,12 @@ struct x676b_accel {
 	struct delayed_work poll_work;
 	struct dentry *debugfs;
 	struct mutex lock;
-	u32 sensor_type;
-	u32 gain;
-	s32 latest[3];
-	s64 timestamp;
+/* accel, magnetometer, light, proximity */
+#define X676B_NSENS 4
+	u32 sensor_type[X676B_NSENS];
+	u32 gain[X676B_NSENS];
+	s32 latest[X676B_NSENS][3];
+	s64 timestamp[X676B_NSENS];
 	unsigned int poll_ms;
 	bool force;
 };
@@ -78,6 +80,12 @@ static int x676b_find_accel(struct x676b_accel *acc)
 	unsigned int i, j;
 	u32 wp;
 
+	/* Observed list types: 1 accel, 2 MMC5603, 5 ALS, 10 proximity. */
+	acc->sensor_type[0] = 1;  acc->gain[0] = 1000;
+	acc->sensor_type[1] = 2;  acc->gain[1] = 1000;
+	acc->sensor_type[2] = 5;  acc->gain[2] = 1;
+	acc->sensor_type[3] = 10; acc->gain[3] = 1;
+
 	/* Search the list data area for the MXC4005X name. */
 	for (i = 0; i < 0x1000 - 8; i++) {
 		bool match = true;
@@ -91,19 +99,17 @@ static int x676b_find_accel(struct x676b_accel *acc)
 		}
 		if (!match)
 			continue;
-		acc->sensor_type = readb(list + X676B_RING_HDR_SIZE + i);
-		acc->gain = rd32(list + X676B_RING_HDR_SIZE + i + 4);
+		acc->sensor_type[0] = readb(list + X676B_RING_HDR_SIZE + i);
+		acc->gain[0] = rd32(list + X676B_RING_HDR_SIZE + i + 4);
 		for (j = 0; j < sizeof(name) - 1; j++)
 			name[j] = readb(list + X676B_RING_HDR_SIZE + i + 8 + j);
 		name[sizeof(name) - 1] = 0;
 		dev_info(acc->dev, "found %s type=%u gain=%u\n",
-			 name, acc->sensor_type, acc->gain);
+			 name, acc->sensor_type[0], acc->gain[0]);
 		return 0;
 	}
 	wp = rd32(list + 4);
 	dev_warn(acc->dev, "accel name not found (list wp=%#x), assuming type 1\n", wp);
-	acc->sensor_type = 1;
-	acc->gain = 1000;
 	return 0;
 }
 
@@ -138,19 +144,31 @@ static void x676b_read_ring(struct x676b_accel *acc)
 		u8 action = readb(data + pos + 1);
 		s64 ts = 0;
 		s32 v0, v1, v2;
-		u32 gain = acc->gain ? acc->gain : 1000;
+		int idx;
 
-		if (type == acc->sensor_type && action == 0) {
+		for (idx = 0; idx < X676B_NSENS; idx++)
+			if (type == acc->sensor_type[idx])
+				break;
+		if (idx == X676B_NSENS || action != 0)
+			goto next;
+		{
+			u32 gain = acc->gain[idx] ? acc->gain[idx] : 1000;
+
 			memcpy_fromio(&ts, data + pos + 4, sizeof(ts));
 			memcpy_fromio(&v0, data + pos + 0x0c, 4);
 			memcpy_fromio(&v1, data + pos + 0x10, 4);
 			memcpy_fromio(&v2, data + pos + 0x14, 4);
-			/* value[0..2] are raw milli-units; gain -> m/s^2. */
-			acc->latest[0] = div_s64((s64)v0 * 1000, gain);
-			acc->latest[1] = div_s64((s64)v1 * 1000, gain);
-			acc->latest[2] = div_s64((s64)v2 * 1000, gain);
-			acc->timestamp = ts;
+			/* Vector sensors: value[0..2] raw milli-units/gain. */
+			if (idx < 2) {
+				acc->latest[idx][0] = div_s64((s64)v0 * 1000, gain);
+				acc->latest[idx][1] = div_s64((s64)v1 * 1000, gain);
+				acc->latest[idx][2] = div_s64((s64)v2 * 1000, gain);
+			} else {
+				acc->latest[idx][0] = v0;
+			}
+			acc->timestamp[idx] = ts;
 		}
+next:
 		pos += item;
 		if (pos >= capacity)
 			pos = 0;
@@ -181,20 +199,30 @@ static int x676b_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW: {
-		int idx = 0;
+		int idx, axis = 0;
 
-		if (chan->channel2 == IIO_MOD_Y)
-			idx = 1;
-		else if (chan->channel2 == IIO_MOD_Z)
-			idx = 2;
+		switch (chan->type) {
+		case IIO_ACCEL: idx = 0; break;
+		case IIO_MAGN: idx = 1; break;
+		case IIO_LIGHT: idx = 2; break;
+		case IIO_PROXIMITY: idx = 3; break;
+		default: return -EINVAL;
+		}
+		if (idx < 2) {
+			if (chan->channel2 == IIO_MOD_Y)
+				axis = 1;
+			else if (chan->channel2 == IIO_MOD_Z)
+				axis = 2;
+		}
 		mutex_lock(&acc->lock);
-		*val = acc->latest[idx];
+		*val = acc->latest[idx][axis];
 		mutex_unlock(&acc->lock);
 		return IIO_VAL_INT;
 	}
 	case IIO_CHAN_INFO_SCALE:
 		*val = 0;
-		*val2 = 1000; /* milli-m/s^2 */
+		*val2 = (chan->type == IIO_ACCEL || chan->type == IIO_MAGN) ?
+			1000 : 1;
 		return IIO_VAL_INT_PLUS_MICRO;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		*val = acc->poll_ms ? 1000 / acc->poll_ms : 0;
@@ -271,8 +299,8 @@ static const struct iio_info x676b_info = {
 	.read_raw = x676b_read_raw,
 };
 
-#define X676B_CHAN(_axis) {					\
-	.type = IIO_ACCEL,					\
+#define X676B_VEC_CHAN(_type, _axis) {				\
+	.type = _type,						\
 	.modified = 1,						\
 	.channel2 = IIO_MOD_##_axis,				\
 	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),		\
@@ -283,10 +311,25 @@ static const struct iio_info x676b_info = {
 		       .storagebits = 32, .endianness = IIO_LE }, \
 }
 
+#define X676B_SCALAR_CHAN(_type) {				\
+	.type = _type,						\
+	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |		\
+			      BIT(IIO_CHAN_INFO_SCALE),		\
+	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SAMP_FREQ), \
+	.scan_index = 0,					\
+	.scan_type = { .sign = 's', .realbits = 32,		\
+		       .storagebits = 32, .endianness = IIO_LE }, \
+}
+
 static const struct iio_chan_spec x676b_channels[] = {
-	X676B_CHAN(X),
-	X676B_CHAN(Y),
-	X676B_CHAN(Z),
+	X676B_VEC_CHAN(IIO_ACCEL, X),
+	X676B_VEC_CHAN(IIO_ACCEL, Y),
+	X676B_VEC_CHAN(IIO_ACCEL, Z),
+	X676B_VEC_CHAN(IIO_MAGN, X),
+	X676B_VEC_CHAN(IIO_MAGN, Y),
+	X676B_VEC_CHAN(IIO_MAGN, Z),
+	X676B_SCALAR_CHAN(IIO_LIGHT),
+	X676B_SCALAR_CHAN(IIO_PROXIMITY),
 };
 
 static int x676b_probe(struct platform_device *pdev)
@@ -334,8 +377,9 @@ static int x676b_probe(struct platform_device *pdev)
 	if (acc->poll_ms)
 		schedule_delayed_work(&acc->poll_work,
 				      msecs_to_jiffies(acc->poll_ms));
-	dev_info(&pdev->dev, "registered, type=%u poll=%ums\n",
-		 acc->sensor_type, acc->poll_ms);
+	dev_info(&pdev->dev, "registered, accel=%u mag=%u light=%u prox=%u poll=%ums\n",
+		 acc->sensor_type[0], acc->sensor_type[1],
+		 acc->sensor_type[2], acc->sensor_type[3], acc->poll_ms);
 	return 0;
 }
 
