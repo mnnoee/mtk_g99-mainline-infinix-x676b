@@ -563,6 +563,13 @@
 
 				mt6358keys {
 					compatible = "mediatek,mt6358-keys";
+					mediatek,long-press-mode = <0x01>;
+					power-off-time-sec = <0x00>;
+
+					power {
+						linux,keycodes = <0x74>; /* KEY_POWER */
+						wakeup-source;
+					};
 				};
 
 				mt6358-adc {
@@ -1884,23 +1891,19 @@
 			};
 		};
 
-		volume-down {
+		keypad@10010000 {
 			compatible = "mediatek,mt6779-keypad";
 			reg = <0x10010000 0x1000>;
-			label = "vdown";
-			1,code = <0x72>;
-			mediatek,matrix-val = <0xbfdf>;
-			mediatek,matrix-reg = <0x0c>;
-			status = "okay";
-		};
-
-		volume-up {
-			compatible = "mediatek,mt6779-keypad";
-			reg = <0x10010000 0x1000>;
-			label = "vup";
-			1,code = <0x73>;
-			mediatek,matrix-val = <0xdfef>;
-			mediatek,matrix-reg = <0x0c>;
+			interrupts = <0x00 0x6a 0x01 0x0b>;
+			clocks = <0x0e>;	/* 26 MHz */
+			clock-names = "kpd";
+			keypad,num-rows = <0x08>;
+			keypad,num-columns = <0x09>;
+			linux,keymap = <0x04000073	/* row 4 col 0: KEY_VOLUMEUP */
+					0x04010072>;	/* row 4 col 1: KEY_VOLUMEDOWN */
+			mediatek,keys-per-group = <0x01>;
+			debounce-delay-ms = <0x10>;
+			wakeup-source;
 			status = "okay";
 		};
 
