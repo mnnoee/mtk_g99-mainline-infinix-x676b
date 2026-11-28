@@ -9,4 +9,5 @@ obj-$(CONFIG_MTK_MMSYS) += mtk-mmsys.o
 obj-$(CONFIG_MTK_MMSYS) += mtk-mutex.o
 obj-$(CONFIG_MTK_SVS) += mtk-svs.o
 obj-$(CONFIG_MTK_SOCINFO) += mtk-socinfo.o
+obj-$(CONFIG_MTK_MD1) += mtk-md1.o
 obj-$(CONFIG_MTK_SCP_TINYSYS) += mtk-scp-tinysys.o

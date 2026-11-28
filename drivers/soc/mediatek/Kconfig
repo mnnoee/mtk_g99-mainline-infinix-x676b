@@ -79,6 +79,15 @@ config MTK_SVS
 	  chip process corner, temperatures and other factors. Then DVFS
 	  driver could apply SVS bank voltage to PMIC/Buck.
 
+config MTK_MD1
+	tristate "MediaTek MT6789 MD1 modem bring-up"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	  Power sequencing, boot-vector release and CCIF/CCISM setup for the
+	  integrated MD1 modem on MT6789.  The DRAM bank remap and firmware
+	  load are performed by the bootloader, like LK does in the stock
+	  boot flow.
+
 config MTK_SCP_TINYSYS
 	tristate "MediaTek tinysys SCP loader and mbox/IPI transport"
 	depends on ARCH_MEDIATEK || COMPILE_TEST

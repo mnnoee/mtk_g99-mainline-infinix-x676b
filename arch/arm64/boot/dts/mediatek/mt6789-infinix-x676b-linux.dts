@@ -353,7 +353,7 @@
 			phandle = <0x24>;
 		};
 
-		syscon@10006000 {
+		scpsys: syscon@10006000 {
 			compatible = "mediatek,mt6789-scpsys", "syscon", "simple-mfd";
 			reg = <0x10006000 0x1000>;
 
@@ -1914,12 +1914,17 @@
 			phandle = <0x2f0>;
 		};
 
-		md-probe@d0cf000 {
-			compatible = "infinix,x676b-md-probe";
-			reg = <0xd0cf000 0x1000>;
+		md1: modem@10209000 {
+			compatible = "mediatek,mt6789-md1";
+			reg = <0x00 0x10209000 0x00 0x1000>,
+			      <0x00 0x1020a000 0x00 0x1000>,
+			      <0x00 0x8e829000 0x00 0xb4400>,
+			      <0x00 0x8e8dd400 0x00 0x1e400>;
+			reg-names = "ap", "md", "ccism", "ccism-exp";
+			mediatek,spm = <&scpsys>;
 			vmodem-supply = <&vmodem>;
 			vsram-supply = <&vsram_core>;
-			status = "okay";
+			status = "disabled";
 		};
 
 		cam-mclk@1a004000 {
