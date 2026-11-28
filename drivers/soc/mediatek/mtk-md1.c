@@ -524,7 +524,7 @@ static int md1_boot(struct mtk_md1 *md)
 	if (ret)
 		return ret;
 
-	ret = md1_wait_hs(md, 3000);
+	ret = md1_wait_hs(md, 5000);
 	dev_info(md->dev, "HS wait: %s (rch=%08x)\n",
 		 ret ? "timeout" : "signalled", md->last_rch);
 	md1_dump(md, "hs");
