@@ -338,7 +338,7 @@
 			status = "disabled";
 		};
 
-		syscon@10001000 {
+		infracfg_ao: syscon@10001000 {
 			compatible = "mediatek,mt6789-infracfg_ao", "mediatek,mt8781-infracfg_ao", "syscon";
 			reg = <0x10001000 0x1000>;
 			#clock-cells = <0x01>;
@@ -1922,8 +1922,21 @@
 			      <0x00 0x8e8dd400 0x00 0x1e400>;
 			reg-names = "ap", "md", "ccism", "ccism-exp";
 			mediatek,spm = <&scpsys>;
+			mediatek,infracfg = <&infracfg_ao>;
 			vmodem-supply = <&vmodem>;
 			vsram-supply = <&vsram_core>;
+			clocks = <&infracfg_ao 30>,	/* CCIF_AP */
+				 <&infracfg_ao 33>,	/* CCIF_MD */
+				 <&infracfg_ao 25>,	/* CCIF1_AP */
+				 <&infracfg_ao 26>,	/* CCIF1_MD */
+				 <&infracfg_ao 57>,	/* CCIF4_MD */
+				 <&infracfg_ao 51>;	/* CCIF5_MD */
+			clock-names = "infra-ccif-ap", "infra-ccif-md",
+				      "infra-ccif1-ap", "infra-ccif1-md",
+				      "infra-ccif4-md", "infra-ccif5-md";
+			interrupts = <0x00 0xe2 0x04 0x0b>,
+				     <0x00 0xe3 0x04 0x0b>;
+			interrupt-names = "ccif0", "ccif1";
 			status = "disabled";
 		};
 
