@@ -187,6 +187,30 @@ static void md1_ring(void __iomem *base, int rx, int tx)
 	writel(RBF_FOOTER, base + len - 4);
 }
 
+static void md1_dump_ring(struct mtk_md1 *md, void __iomem *base,
+			   const char *tag)
+{
+	u32 rd = readl(base + 8);
+	u32 wr = readl(base + 12);
+	u32 len = readl(base + 16);
+	int i;
+
+	dev_info(md->dev, "%s : rd=%u wr=%u len=%u\n", tag, rd, wr, len);
+	if (rd == wr || !len)
+		return;
+	for (i = 0; i < 16; i++) {
+		u32 v = readl(base + 32 + ((rd + i * 4) % len));
+
+		dev_info(md->dev, "%s : data[%02d]=%08x\n", tag, i, v);
+		if (i == 0 && v != 0xffffffff)
+			break;
+	}
+	if (readl(base + 32 + (rd % len)) == 0xffffffff &&
+	    readl(base + 32 + ((rd + 4) % len)) == 0 &&
+	    readl(base + 32 + ((rd + 12) % len)) == 0x5555ffff)
+		dev_info(md->dev, "%s : CCCI HS1 packet detected\n", tag);
+}
+
 static void md1_dump(struct mtk_md1 *md, const char *tag)
 {
 	struct arm_smccc_res res;
@@ -243,6 +267,8 @@ static void md1_dump(struct mtk_md1 *md, const char *tag)
 	dev_info(md->dev,
 		 "%s: boot_status smc=%08lx/%08lx boot_slave=%ld last_rch=%08x\n",
 		 tag, res.a1, res.a2, res.a3, md->last_rch);
+	md1_dump_ring(md, md->ccism, "q0");
+	md1_dump_ring(md, md->ccism_exp, "exp0");
 }
 
 static int md1_ccif_reset(struct mtk_md1 *md)
