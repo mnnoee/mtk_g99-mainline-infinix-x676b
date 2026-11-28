@@ -266,7 +266,7 @@ static int md1_ccif_start(struct mtk_md1 *md, bool reset)
 	void __iomem *e = md->ccism_exp;
 	int i, ret;
 
-	if (md->num_clks) {
+	if (md->num_clks && !md->clks_on) {
 		ret = clk_bulk_prepare_enable(md->num_clks, md->clks);
 		if (ret) {
 			dev_err(md->dev, "CCIF clock enable failed: %d\n", ret);
