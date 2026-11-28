@@ -121,25 +121,29 @@ static void x676b_read_ring(struct x676b_accel *acc)
 	u32 wp = rd32(ring + 4);
 	u32 capacity = rd32(ring + 8);
 	u32 item = rd32(ring + 12);
-	u32 pos, n;
+	u32 pos;
 
-	if (item != X676B_RING_ITEM_SIZE || capacity > 0x100000) {
+	if (item != X676B_RING_ITEM_SIZE || capacity > 0x100000 || !capacity) {
 		dev_warn_once(acc->dev, "bad ring: item=%u cap=%u\n", item, capacity);
 		return;
 	}
 	if (rp == wp && !acc->force)
 		return;
-	if (rp == wp)
-		rp = (wp >= 8 * item) ? wp - 8 * item : 0;
+	if (rp == wp) {
+		if (wp >= 8 * item) {
+			rp = wp - 8 * item;
+		} else {
+			rp = 0;
+			wp = min(8 * item, capacity);
+		}
+	}
 	if (wp > capacity)
 		wp = capacity;
-
-	n = (wp >= rp) ? (wp - rp) / item : (capacity - rp) / item;
-	if (!n && acc->force)
-		n = 8;
+	if (rp >= capacity)
+		rp = 0;
 	pos = rp;
 
-	while (n--) {
+	while (pos != wp) {
 		u8 type = readb(data + pos);
 		u8 action = readb(data + pos + 1);
 		s64 ts = 0;
@@ -172,6 +176,8 @@ next:
 		pos += item;
 		if (pos >= capacity)
 			pos = 0;
+		if (pos == rp)
+			break;
 	}
 	if (rp != wp)
 		wr32(ring + 0, wp); /* publish the read position */
