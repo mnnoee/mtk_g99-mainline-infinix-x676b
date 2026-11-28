@@ -61,24 +61,6 @@ static bool force;
 module_param(force, bool, 0644);
 MODULE_PARM_DESC(force, "Parse stale records even when rp == wp");
 
-/* Convert an IEEE-754 single-precision bit pattern to milli-units. */
-static s32 float_to_milli(u32 bits)
-{
-	s32 sign = (bits & 0x80000000) ? -1 : 1;
-	s32 exp = (bits >> 23) & 0xff;
-	u32 mant = (bits & 0x7fffff) | 0x800000;
-	s64 val;
-
-	if (exp == 0)
-		return 0;
-	exp -= 127;
-	if (exp >= 23)
-		val = ((s64)mant * 1000) << (exp - 23);
-	else
-		val = ((s64)mant * 1000) >> (23 - exp);
-	return sign * (s32)val;
-}
-
 static u32 rd32(void __iomem *p)
 {
 	return readl(p);
@@ -155,17 +137,18 @@ static void x676b_read_ring(struct x676b_accel *acc)
 		u8 type = readb(data + pos);
 		u8 action = readb(data + pos + 1);
 		s64 ts = 0;
-		s32 v3, v4, v5;
+		s32 v0, v1, v2;
+		u32 gain = acc->gain ? acc->gain : 1000;
 
 		if (type == acc->sensor_type && action == 0) {
 			memcpy_fromio(&ts, data + pos + 4, sizeof(ts));
-			memcpy_fromio(&v3, data + pos + 0x18, 4);
-			memcpy_fromio(&v4, data + pos + 0x1c, 4);
-			memcpy_fromio(&v5, data + pos + 0x20, 4);
-			/* Floats in m/s^2; expose milli-m/s^2. */
-			acc->latest[0] = float_to_milli(v3);
-			acc->latest[1] = float_to_milli(v4);
-			acc->latest[2] = float_to_milli(v5);
+			memcpy_fromio(&v0, data + pos + 0x0c, 4);
+			memcpy_fromio(&v1, data + pos + 0x10, 4);
+			memcpy_fromio(&v2, data + pos + 0x14, 4);
+			/* value[0..2] are raw milli-units; gain -> m/s^2. */
+			acc->latest[0] = div_s64((s64)v0 * 1000, gain);
+			acc->latest[1] = div_s64((s64)v1 * 1000, gain);
+			acc->latest[2] = div_s64((s64)v2 * 1000, gain);
 			acc->timestamp = ts;
 		}
 		pos += item;
