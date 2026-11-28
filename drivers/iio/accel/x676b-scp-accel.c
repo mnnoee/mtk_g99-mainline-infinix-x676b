@@ -16,6 +16,7 @@
  *         are {sensor_type u8, pad[3], gain u32, name[16], vendor[16]}.
  */
 
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/io.h>
@@ -25,6 +26,7 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/seq_file.h>
 #include <linux/workqueue.h>
 
 #define X676B_SHARE_BASE	0x8f000000UL
@@ -41,6 +43,7 @@ struct x676b_accel {
 	void __iomem *share;
 	struct iio_dev *indio;
 	struct delayed_work poll_work;
+	struct dentry *debugfs;
 	struct mutex lock;
 	u32 sensor_type;
 	u32 gain;
@@ -218,6 +221,69 @@ static int x676b_read_raw(struct iio_dev *indio_dev,
 	}
 }
 
+static void x676b_name(char *dst, size_t n, void __iomem *src)
+{
+	size_t i;
+
+	for (i = 0; i + 1 < n; i++) {
+		u8 c = readb(src + i);
+
+		if (!c)
+			break;
+		dst[i] = (c >= 0x20 && c < 0x7f) ? c : '.';
+	}
+	dst[i] = 0;
+}
+
+static int x676b_debug_show(struct seq_file *s, void *unused)
+{
+	struct x676b_accel *acc = s->private;
+	void __iomem *list = acc->share + X676B_SENS_LIST_OFF;
+	void __iomem *ring = acc->share + X676B_SENS_RING_OFF;
+	void __iomem *data = ring + X676B_RING_HDR_SIZE;
+	u32 rp, wp, cap, item, pos, start;
+	char name[17], vendor[17];
+	int i;
+
+	seq_printf(s, "list: rp=%u wp=%u size=%u item=%u\n",
+		   rd32(list + 0), rd32(list + 4), rd32(list + 8), rd32(list + 12));
+	for (i = 0; i < 32; i++) {
+		void __iomem *e = list + X676B_RING_HDR_SIZE + i * X676B_LIST_ITEM_SIZE;
+		u8 type = readb(e);
+
+		if (type == 0 || type == 0xff)
+			break;
+		x676b_name(name, sizeof(name), e + 8);
+		x676b_name(vendor, sizeof(vendor), e + 24);
+		seq_printf(s, "  type=%u gain=%u name=%s vendor=%s\n",
+			   type, rd32(e + 4), name, vendor);
+	}
+
+	rp = rd32(ring + 0);
+	wp = rd32(ring + 4);
+	cap = rd32(ring + 8);
+	item = rd32(ring + 12);
+	seq_printf(s, "ring: rp=%u wp=%u size=%u item=%u\n", rp, wp, cap, item);
+	if (item != X676B_RING_ITEM_SIZE || wp > cap)
+		return 0;
+	start = (wp >= 8 * item) ? wp - 8 * item : 0;
+	for (pos = start; pos < wp; pos += item) {
+		u8 type = readb(data + pos);
+		u8 action = readb(data + pos + 1);
+		s64 ts;
+		s32 v[6];
+		int j;
+
+		memcpy_fromio(&ts, data + pos + 4, sizeof(ts));
+		for (j = 0; j < 6; j++)
+			memcpy_fromio(&v[j], data + pos + 12 + j * 4, 4);
+		seq_printf(s, "  type=%u act=%u ts=%lld v=%d,%d,%d,%d,%d,%d\n",
+			   type, action, ts, v[0], v[1], v[2], v[3], v[4], v[5]);
+	}
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(x676b_debug);
+
 static const struct iio_info x676b_info = {
 	.read_raw = x676b_read_raw,
 };
@@ -279,6 +345,9 @@ static int x676b_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	acc->debugfs = debugfs_create_file("x676b_scp_accel", 0444, NULL,
+					   acc, &x676b_debug_fops);
+
 	if (acc->poll_ms)
 		schedule_delayed_work(&acc->poll_work,
 				      msecs_to_jiffies(acc->poll_ms));
@@ -293,6 +362,7 @@ static void x676b_remove(struct platform_device *pdev)
 	struct x676b_accel *acc = iio_priv(indio);
 
 	cancel_delayed_work_sync(&acc->poll_work);
+	debugfs_remove(acc->debugfs);
 }
 
 static struct platform_driver x676b_driver = {
